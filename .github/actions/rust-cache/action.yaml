@@ -11,9 +11,9 @@ runs:
       name: Cache Cargo registry
       id: cache-cargo-registry
       with:
-        key: cargo-registry-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ github.ref_name }}
+        key: cargo-registry-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
         restore-keys: |
-          cargo-registry-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-main
+          cargo-registry-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-main-
           cargo-registry-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-
         path: |
           ~/.cargo/registry/index/
@@ -23,9 +23,9 @@ runs:
       name: Cache Cargo target
       id: cache-cargo-target
       with:
-        key: cargo-target-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}-${{ github.ref_name }}
+        key: cargo-target-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
         restore-keys: |
-          cargo-target-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-main
+          cargo-target-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-main-
           cargo-target-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-
         path: |
           target/**
