@@ -5,6 +5,7 @@ categories = [
   "development-tools::build-utils",
 ]
 description = "cargo-hold: A CI tool to ensure Cargo's incremental compilation is reliable by managing your caches intelligently"
+documentation = "https://docs.rs/cargo-hold"
 edition = "2024"
 homepage = "https://github.com/Ellipsis-labs/cargo-hold"
 keywords = ["cargo", "ci", "cache", "build", "incremental"]

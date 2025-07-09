@@ -24,10 +24,10 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           cache-name: publish-test
-      - uses: ./.github/actions/cargo-hold-install
       - uses: ./.github/actions/cargo-binstall
         with:
-          binaries: cargo-nextest
+          binaries: cargo-nextest cargo-hold
+      - run: cargo hold voyage
       - run: cargo nextest run --locked --profile ci
 
   cross-build:

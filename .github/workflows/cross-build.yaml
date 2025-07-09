@@ -47,7 +47,10 @@ jobs:
         with:
           cache-name: cross-build
 
-      - uses: ./.github/actions/cargo-hold-install
+      - uses: ./.github/actions/cargo-binstall
+        with:
+          binaries: cargo-hold
+      - run: cargo hold voyage
 
       - name: Determine rust target
         id: rust-target

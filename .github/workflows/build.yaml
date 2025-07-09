@@ -31,7 +31,10 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           cache-name: check
-      - uses: ./.github/actions/cargo-hold-install
+      - uses: ./.github/actions/cargo-binstall
+        with:
+          binaries: cargo-hold
+      - run: cargo hold voyage
       - run: cargo check --locked --all-targets
 
   test:
@@ -46,10 +49,10 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           cache-name: test
-      - uses: ./.github/actions/cargo-hold-install
       - uses: ./.github/actions/cargo-binstall
         with:
-          binaries: cargo-nextest
+          binaries: cargo-nextest cargo-hold
+      - run: cargo hold voyage
       - run: cargo nextest run --locked --profile ci
 
   doctest:
@@ -64,7 +67,10 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           cache-name: doctest
-      - uses: ./.github/actions/cargo-hold-install
+      - uses: ./.github/actions/cargo-binstall
+        with:
+          binaries: cargo-hold
+      - run: cargo hold voyage
       - run: cargo test --locked --doc
 
   clippy:
@@ -75,7 +81,10 @@ jobs:
       - uses: ./.github/actions/rust-cache
         with:
           cache-name: clippy
-      - uses: ./.github/actions/cargo-hold-install
+      - uses: ./.github/actions/cargo-binstall
+        with:
+          binaries: cargo-hold
+      - run: cargo hold voyage
       - run: cargo +nightly-2025-07-08 clippy --all-targets -- -D warnings
 
   fmt:
