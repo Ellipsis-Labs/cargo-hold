@@ -109,6 +109,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload cache misses to Nix cache
+        if: always()
         run: |
           # Check if we have any locally built paths to upload
           if [ -f /tmp/locally-built-paths.txt ] && [ -s /tmp/locally-built-paths.txt ]; then
