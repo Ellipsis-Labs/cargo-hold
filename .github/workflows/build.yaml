@@ -1,0 +1,121 @@
+name: Check, test, clippy
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  NIX_SIGNING_PUBLIC_KEY: "ellipsis-labs:eug33YU0s2/K/BgiOtEta1cwNIzERtIybNATLOBsrEA="
+  NIX_CACHE_URI: "s3://atlas-nix-cache?compression=zstd&parallel-compression=true&endpoint=6a2b885167c20bd5dd1d3bcb4b09760f.r2.cloudflarestorage.com"
+
+jobs:
+  check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update
+      - uses: ./.github/actions/rust-cache
+        with:
+          cache-name: check
+      - uses: ./.github/actions/cargo-hold-install
+      - run: cargo check --all-targets
+
+  test:
+    runs-on: ${{ matrix.os }}
+    needs: [check]
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update
+      - uses: ./.github/actions/rust-cache
+        with:
+          cache-name: test
+      - uses: ./.github/actions/cargo-hold-install
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+      - name: Install cargo-nextest
+        run: cargo binstall --no-confirm cargo-nextest
+      - run: cargo nextest run --profile ci
+
+  doctest:
+    runs-on: ${{ matrix.os }}
+    needs: [check]
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update
+      - uses: ./.github/actions/rust-cache
+        with:
+          cache-name: doctest
+      - uses: ./.github/actions/cargo-hold-install
+      - run: cargo test --doc
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install nightly-2025-07-08 --component clippy
+      - uses: ./.github/actions/rust-cache
+        with:
+          cache-name: clippy
+      - uses: ./.github/actions/cargo-hold-install
+      - run: cargo +nightly-2025-07-08 clippy --all-targets -- -D warnings
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install nightly-2025-07-08 --component rustfmt
+      - run: cargo +nightly-2025-07-08 fmt --check
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+      - name: Install cargo-deny
+        run: cargo binstall --no-confirm cargo-deny
+      - run: cargo deny check
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+      - name: Install cargo-audit
+        run: cargo binstall --no-confirm cargo-audit
+      - run: cargo audit
+
+  cross-build:
+    needs: [test, doctest, clippy, fmt, deny, audit]
+    uses: ./.github/workflows/cross-build.yaml
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      NIX_SIGNING_KEY: ${{ secrets.NIX_SIGNING_KEY }}
+
+  all-checks-passed:
+    needs: [check, test, doctest, clippy, fmt, deny, audit, cross-build]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All checks passed"

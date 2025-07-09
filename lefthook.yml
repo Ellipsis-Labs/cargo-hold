@@ -1,0 +1,62 @@
+# EXAMPLE USAGE:
+#
+#   Refer for explanation to following link:
+#   https://github.com/evilmartians/lefthook/blob/master/docs/configuration.md
+#
+# pre-push:
+#   commands:
+#     packages-audit:
+#       tags: frontend security
+#       run: yarn audit
+#     gems-audit:
+#       tags: backend security
+#       run: bundle audit
+#
+# pre-commit:
+#   parallel: true
+#   commands:
+#     eslint:
+#       glob: "*.{js,ts,jsx,tsx}"
+#       run: yarn eslint {staged_files}
+#     rubocop:
+#       tags: backend style
+#       glob: "*.rb"
+#       exclude: '(^|/)(application|routes)\.rb$'
+#       run: bundle exec rubocop --force-exclusion {all_files}
+#     govet:
+#       tags: backend style
+#       files: git ls-files -m
+#       glob: "*.go"
+#       run: go vet {files}
+#   scripts:
+#     "hello.js":
+#       runner: node
+#     "any.go":
+#       runner: go run
+
+# There are bugs in older versions that we want to avoid.
+min_version: 1.11.12
+
+pre-commit:
+  parallel: true
+  commands:
+    taplo:
+      glob: "*.toml"
+      run: taplo fmt {staged_files}
+      tags: [lint, fmt, toml]
+      stage_fixed: true
+    prettier:
+      glob: "*.{json,yaml,yml,md,js,ts,jsx,tsx}"
+      run: npx -y prettier --write {staged_files}
+      tags: [lint, fmt, json, yaml, md, js, ts]
+      stage_fixed: true
+    rustfmt:
+      glob: "**/*.rs"
+      run: cargo +nightly fmt -- {staged_files}
+      tags: [lint, fmt, rust]
+      stage_fixed: true
+    alejandra:
+      glob: "*.nix"
+      tags: [lint, fmt, nix]
+      run: alejandra {staged_files}
+      stage_fixed: true

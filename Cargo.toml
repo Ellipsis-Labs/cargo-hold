@@ -1,0 +1,53 @@
+[package]
+authors = ["Ellipsis Labs Team", "Brenden Matthews <brenden@brndn.io"]
+categories = [
+  "development-tools::cargo-plugins",
+  "development-tools::build-utils",
+]
+description = "cargo-hold: A CI tool to ensure Cargo's incremental compilation is reliable by managing your caches intelligently"
+edition = "2024"
+homepage = "https://github.com/Ellipsis-labs/cargo-hold"
+keywords = ["cargo", "ci", "cache", "build", "incremental"]
+license = "MIT"
+name = "cargo-hold"
+readme = "README.md"
+repository = "https://github.com/Ellipsis-labs/cargo-hold"
+rust-version = "1.88.0"
+version = "1.0.0"
+
+[[bin]]
+name = "cargo-hold"
+path = "src/main.rs"
+
+[lib]
+name = "cargo_hold"
+path = "src/lib.rs"
+
+[dependencies]
+blake3    = { version = "1.8", features = ["rayon", "mmap"] }
+clap      = { version = "4.5", features = ["derive", "cargo", "env"] }
+git2      = "0.20"
+home      = "0.5"
+memmap2   = "0.9"
+miette    = { version = "7.6", features = ["fancy"] }
+rayon     = "1.10"
+regex     = "1.11"
+rkyv      = { version = "0.8", features = ["std", "alloc"] }
+thiserror = "2.0"
+walkdir   = "2.5"
+
+[dev-dependencies]
+assert_fs  = "1.1"
+filetime   = "0.2"
+predicates = "3.1"
+proptest   = "1.7"
+tempfile   = "3.10"
+
+[profile.release]
+codegen-units = 1
+lto           = true
+
+[package.metadata.binstall]
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.tar.gz"

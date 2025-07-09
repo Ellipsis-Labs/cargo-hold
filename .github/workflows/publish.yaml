@@ -1,0 +1,117 @@
+name: Publish to crates.io
+
+on:
+  push:
+    tags:
+      - v*
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+  discussions: write
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update
+      - uses: ./.github/actions/rust-cache
+        with:
+          cache-name: publish-test
+      - uses: ./.github/actions/cargo-hold-install
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+      - name: Install cargo-nextest
+        run: cargo binstall --no-confirm cargo-nextest
+      - run: cargo nextest run --profile ci
+
+  cross-build:
+    needs: [test]
+    uses: ./.github/workflows/cross-build.yaml
+    secrets:
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      NIX_SIGNING_KEY: ${{ secrets.NIX_SIGNING_KEY }}
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [cross-build]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update
+      - run: echo ${{ secrets.CRATES_IO_TOKEN }} | cargo login
+      - run: cargo publish
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          cd artifacts
+
+          # Extract version from the git tag (remove 'v' prefix)
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "Version: $VERSION"
+
+          # Map artifact directory names to Rust target triples
+          declare -A target_map=(
+            ["x86_64-linux"]="x86_64-unknown-linux-musl"
+            ["aarch64-linux"]="aarch64-unknown-linux-musl"
+            ["x86_64-darwin"]="x86_64-apple-darwin"
+            ["aarch64-darwin"]="aarch64-apple-darwin"
+          )
+
+          # Create compressed archives for each platform
+          for arch_dir in cargo-hold-*; do
+            if [ -d "$arch_dir" ]; then
+              arch_name="${arch_dir#cargo-hold-}"
+              rust_target="${target_map[$arch_name]}"
+              
+              if [ -z "$rust_target" ]; then
+                echo "Warning: Unknown architecture mapping for $arch_name"
+                rust_target="$arch_name"
+              fi
+              
+              # Move into directory and get the binary
+              cd "$arch_dir"
+              
+              # The binary is named cargo-hold
+              if [ -f "cargo-hold" ]; then
+                # Create a tar.gz archive with the binary using cargo-binstall naming
+                tar -czf "../cargo-hold-${VERSION}-${rust_target}.tar.gz" cargo-hold
+                echo "Created cargo-hold-${VERSION}-${rust_target}.tar.gz"
+              else
+                echo "Warning: Binary not found in $arch_dir"
+              fi
+              
+              cd ..
+            fi
+          done
+
+          # Generate checksums for all archives
+          echo "Generating checksums..."
+          sha256sum *.tar.gz > cargo-hold-checksums-sha256.txt
+
+          # List all created files
+          echo "Release assets:"
+          ls -la *.tar.gz cargo-hold-checksums-sha256.txt
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        if: github.ref_type == 'tag'
+        with:
+          draft: false
+          prerelease: false
+          discussion_category_name: General
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/cargo-hold-checksums-sha256.txt

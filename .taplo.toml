@@ -1,0 +1,6 @@
+[formatting]
+align_comments      = true
+align_entries       = true
+allowed_blank_lines = 2
+reorder_keys        = true
+trailing_newlines   = false
