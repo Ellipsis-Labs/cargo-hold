@@ -33,7 +33,6 @@ jobs:
       - uses: ./.github/actions/cargo-binstall
         with:
           binaries: cargo-hold
-      - run: rustup update
       - run: cargo hold voyage
       - run: cargo check --locked --all-targets
 
@@ -51,7 +50,6 @@ jobs:
       - uses: ./.github/actions/cargo-binstall
         with:
           binaries: cargo-nextest cargo-hold
-      - run: rustup update
       - run: cargo hold voyage
       - run: cargo nextest run --locked --profile ci
 
@@ -69,7 +67,6 @@ jobs:
       - uses: ./.github/actions/cargo-binstall
         with:
           binaries: cargo-hold
-      - run: rustup update
       - run: cargo hold voyage
       - run: cargo test --locked --doc
 
