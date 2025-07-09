@@ -7,12 +7,12 @@ categories = [
 description = "cargo-hold: A CI tool to ensure Cargo's incremental compilation is reliable by managing your caches intelligently"
 documentation = "https://docs.rs/cargo-hold"
 edition = "2024"
-homepage = "https://github.com/Ellipsis-labs/cargo-hold"
+homepage = "https://github.com/Ellipsis-Labs/cargo-hold"
 keywords = ["cargo", "ci", "cache", "build", "incremental"]
 license = "MIT"
 name = "cargo-hold"
 readme = "README.md"
-repository = "https://github.com/Ellipsis-labs/cargo-hold"
+repository = "https://github.com/Ellipsis-Labs/cargo-hold"
 rust-version = "1.88.0"
 version = "1.0.1"
 
