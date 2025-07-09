@@ -26,6 +26,7 @@ jobs:
       - uses: ./.github/actions/cargo-binstall
         with:
           binaries: cargo-nextest cargo-hold
+      - run: rustup update
       - run: cargo hold voyage
       - run: cargo nextest run --locked --profile ci
 
