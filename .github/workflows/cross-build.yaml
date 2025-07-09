@@ -45,7 +45,7 @@ jobs:
 
       - uses: ./.github/actions/rust-cache
         with:
-          cache-name: cross-build
+          cache-name: cross-build-${{ matrix.target.arch }}
 
       - uses: ./.github/actions/cargo-binstall
         with:
@@ -70,7 +70,6 @@ jobs:
               ;;
           esac
 
-      - run: rustup update
       - name: Build binary
         run: |
           # Track what nix actually builds (not downloads) using the post-build-hook
