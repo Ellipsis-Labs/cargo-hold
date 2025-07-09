@@ -27,7 +27,6 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - run: rustup update
       - uses: ./.github/actions/rust-cache
         with:
           cache-name: check
@@ -45,7 +44,6 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - run: rustup update
       - uses: ./.github/actions/rust-cache
         with:
           cache-name: test
@@ -63,7 +61,6 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - run: rustup update
       - uses: ./.github/actions/rust-cache
         with:
           cache-name: doctest
@@ -77,7 +74,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: rustup toolchain install nightly-2025-07-08 --component clippy
       - uses: ./.github/actions/rust-cache
         with:
           cache-name: clippy
@@ -91,7 +87,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: rustup toolchain install nightly-2025-07-08 --component rustfmt
       - run: cargo +nightly-2025-07-08 fmt --check
 
   deny:
