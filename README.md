@@ -100,9 +100,9 @@ jobs:
         name: Cache Cargo registry
         id: cache-cargo-registry
         with:
-          key: cargo-registry-check-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            cargo-registry-check-${{ runner.os }}-${{ runner.arch }}-
+            cargo-registry-${{ runner.os }}-${{ runner.arch }}-
           path: |
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
@@ -111,9 +111,9 @@ jobs:
         name: Cache Cargo target
         id: cache-cargo-target
         with:
-          key: cargo-target-check-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-target-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            cargo-target-check-${{ runner.os }}-${{ runner.arch }}-
+            cargo-target-${{ runner.os }}-${{ runner.arch }}-
           path: |
             target/**
       - name: Install cargo-binstall
