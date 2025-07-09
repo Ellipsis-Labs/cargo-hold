@@ -70,7 +70,6 @@ jobs:
               ;;
           esac
 
-      - run: rustup update
       - name: Build binary
         run: |
           # Track what nix actually builds (not downloads) using the post-build-hook
