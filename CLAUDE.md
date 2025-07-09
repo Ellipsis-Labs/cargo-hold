@@ -99,6 +99,7 @@ The project uses GitHub Actions with:
 - Always run `cargo clippy` before committing
 - Use `cargo +nightly fmt` for formatting (project uses 2024 style edition)
 - Check licenses with `cargo deny check` when adding dependencies
+- Use conventional commits-style commit messages https://www.conventionalcommits.org/en/v1.0.0/
 
 ## Error Handling Guidelines
 

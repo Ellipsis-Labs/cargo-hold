@@ -32,7 +32,7 @@ jobs:
         with:
           cache-name: check
       - uses: ./.github/actions/cargo-hold-install
-      - run: cargo check --all-targets
+      - run: cargo check --locked --all-targets
 
   test:
     runs-on: ${{ matrix.os }}
@@ -47,11 +47,10 @@ jobs:
         with:
           cache-name: test
       - uses: ./.github/actions/cargo-hold-install
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
-      - name: Install cargo-nextest
-        run: cargo binstall --no-confirm cargo-nextest
-      - run: cargo nextest run --profile ci
+      - uses: ./.github/actions/cargo-binstall
+        with:
+          binaries: cargo-nextest
+      - run: cargo nextest run --locked --profile ci
 
   doctest:
     runs-on: ${{ matrix.os }}
@@ -66,7 +65,7 @@ jobs:
         with:
           cache-name: doctest
       - uses: ./.github/actions/cargo-hold-install
-      - run: cargo test --doc
+      - run: cargo test --locked --doc
 
   clippy:
     runs-on: ubuntu-latest
@@ -90,20 +89,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
-      - name: Install cargo-deny
-        run: cargo binstall --no-confirm cargo-deny
+      - uses: ./.github/actions/cargo-binstall
+        with:
+          binaries: cargo-deny
       - run: cargo deny check
 
   audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
-      - name: Install cargo-audit
-        run: cargo binstall --no-confirm cargo-audit
+      - uses: ./.github/actions/cargo-binstall
+        with:
+          binaries: cargo-audit
       - run: cargo audit
 
   cross-build:
