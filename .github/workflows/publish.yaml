@@ -20,14 +20,14 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - run: rustup update
       - uses: ./.github/actions/rust-cache
         with:
           cache-name: publish-test
-      - uses: ./.github/actions/cargo-hold-install
       - uses: ./.github/actions/cargo-binstall
         with:
-          binaries: cargo-nextest
+          binaries: cargo-nextest cargo-hold
+      - run: rustup update
+      - run: cargo hold voyage
       - run: cargo nextest run --locked --profile ci
 
   cross-build:
@@ -43,7 +43,6 @@ jobs:
     needs: [cross-build]
     steps:
       - uses: actions/checkout@v4
-      - run: rustup update
       - run: echo ${{ secrets.CRATES_IO_TOKEN }} | cargo login
       - run: cargo publish
 

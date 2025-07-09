@@ -47,7 +47,10 @@ jobs:
         with:
           cache-name: cross-build
 
-      - uses: ./.github/actions/cargo-hold-install
+      - uses: ./.github/actions/cargo-binstall
+        with:
+          binaries: cargo-hold
+      - run: cargo hold voyage
 
       - name: Determine rust target
         id: rust-target
@@ -67,6 +70,7 @@ jobs:
               ;;
           esac
 
+      - run: rustup update
       - name: Build binary
         run: |
           # Track what nix actually builds (not downloads) using the post-build-hook
