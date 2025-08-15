@@ -28,7 +28,7 @@ jobs:
           - { arch: aarch64-darwin, runner: macos-latest }
           - { arch: x86_64-darwin, runner: macos-latest }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure R2 credentials
         uses: ./.github/actions/setup-r2-credentials
