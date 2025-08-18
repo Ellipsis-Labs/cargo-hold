@@ -31,7 +31,7 @@ git2      = "0.20"
 home      = "0.5"
 memmap2   = "0.9"
 miette    = { version = "7.6", features = ["fancy"] }
-rayon     = "1.10"
+rayon     = "1.11"
 regex     = "1.11"
 rkyv      = { version = "0.8", features = ["std", "alloc"] }
 thiserror = "2.0"
