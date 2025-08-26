@@ -37,7 +37,7 @@ jobs:
           r2-secret-access-key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
 
       - name: Install nix
-        uses: nixbuild/nix-quick-install-action@v32
+        uses: nixbuild/nix-quick-install-action@v33
         with:
           nix_conf: |
             substituters = ${{ env.NIX_CACHE_URI }} https://cache.nixos.org/
