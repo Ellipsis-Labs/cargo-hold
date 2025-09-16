@@ -107,7 +107,16 @@ pub fn salvage(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<
     let new_mtime = generate_monotonic_timestamp(&metadata);
 
     // Discover tracked files - these are already relative to repo root
-    let (repo_root, tracked_files) = discover_tracked_files(working_dir)?;
+    let (repo_root, tracked_files, symlink_count) = discover_tracked_files(working_dir)?;
+
+    // Report symlinks if any were found
+    if symlink_count > 0 {
+        eprintln!(
+            "Warning: Skipped {} symbolic link{} (timestamps not needed for symlinks)",
+            symlink_count,
+            if symlink_count == 1 { "" } else { "s" }
+        );
+    }
 
     // Analyze files to categorize them
     let (unchanged, modified, added) =
@@ -168,10 +177,19 @@ pub fn stow(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<()>
     }
 
     // Discover tracked files - these are already relative to repo root
-    let (repo_root, tracked_files) = discover_tracked_files(working_dir)?;
+    let (repo_root, tracked_files, symlink_count) = discover_tracked_files(working_dir)?;
 
     if verbose > 0 {
         eprintln!("Found {} tracked files", tracked_files.len());
+    }
+
+    // Report symlinks if any were found
+    if symlink_count > 0 {
+        eprintln!(
+            "Note: Skipped {} symbolic link{} (not stored in metadata)",
+            symlink_count,
+            if symlink_count == 1 { "" } else { "s" }
+        );
     }
 
     // Build new metadata state in parallel
@@ -181,21 +199,13 @@ pub fn stow(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<()>
             let full_path = repo_root.join(path);
             let size = get_file_size(&full_path)?;
             let hash = hash_file(&full_path)?;
-            // Use symlink_metadata to be consistent with other checks
-            let metadata = std::fs::symlink_metadata(&full_path).map_err(|source| {
+            // Get file metadata (symlinks already filtered out by discover_tracked_files)
+            let metadata = std::fs::metadata(&full_path).map_err(|source| {
                 crate::error::HoldError::IoError {
                     path: path.clone(),
                     source,
                 }
             })?;
-
-            // Skip symlinks (should already be caught by get_file_size, but be defensive)
-            if metadata.is_symlink() {
-                return Err(crate::error::HoldError::InvalidFileType {
-                    path: path.clone(),
-                    message: "Symbolic links are not supported".to_string(),
-                });
-            }
 
             let mtime = metadata
                 .modified()
