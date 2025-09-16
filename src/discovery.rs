@@ -8,7 +8,8 @@ use crate::error::HoldError;
 ///
 /// This function uses the Git index to find all files that are tracked by Git,
 /// automatically respecting `.gitignore` rules. The returned paths are relative
-/// to the repository root.
+/// to the repository root. Symbolic links tracked by Git are included in the
+/// results but can be filtered by the caller if needed.
 ///
 /// # Arguments
 ///
@@ -20,6 +21,7 @@ use crate::error::HoldError;
 /// A tuple containing:
 /// - The repository root path (absolute)
 /// - A vector of file paths relative to the repository root
+/// - A count of skipped symbolic links
 ///
 /// # Errors
 ///
@@ -27,7 +29,9 @@ use crate::error::HoldError;
 /// - No Git repository is found at or above the given path
 /// - The Git index cannot be accessed
 /// - Any file path contains invalid UTF-8
-pub fn discover_tracked_files(repo_path: &Path) -> Result<(PathBuf, Vec<PathBuf>), HoldError> {
+pub fn discover_tracked_files(
+    repo_path: &Path,
+) -> Result<(PathBuf, Vec<PathBuf>, usize), HoldError> {
     // Open the repository, searching upward from the given path
     let repo = Repository::discover(repo_path).map_err(|_| HoldError::RepoNotFound {
         path: repo_path.to_path_buf(),
@@ -44,15 +48,19 @@ pub fn discover_tracked_files(repo_path: &Path) -> Result<(PathBuf, Vec<PathBuf>
     // Access the Git index
     let index = repo.index().map_err(HoldError::IndexError)?;
 
-    // Collect all tracked file paths
-    let tracked_files = collect_index_paths(&index)?;
+    // Collect all tracked file paths, filtering out symlinks
+    let (tracked_files, symlink_count) = collect_index_paths(&index, &repo_root)?;
 
-    Ok((repo_root, tracked_files))
+    Ok((repo_root, tracked_files, symlink_count))
 }
 
-/// Extract all file paths from the Git index
-fn collect_index_paths(index: &Index) -> Result<Vec<PathBuf>, HoldError> {
+/// Extract all file paths from the Git index, filtering out symlinks
+fn collect_index_paths(
+    index: &Index,
+    repo_root: &Path,
+) -> Result<(Vec<PathBuf>, usize), HoldError> {
     let mut paths = Vec::new();
+    let mut symlink_count = 0;
 
     for entry in index.iter() {
         // Skip submodules (mode 160000) - they appear as directories in the filesystem
@@ -70,10 +78,30 @@ fn collect_index_paths(index: &Index) -> Result<Vec<PathBuf>, HoldError> {
         })?;
 
         let path_buf = PathBuf::from(path_str);
+
+        // Check if the file is a symlink in the actual filesystem
+        let full_path = repo_root.join(&path_buf);
+        match std::fs::symlink_metadata(&full_path) {
+            Ok(metadata) => {
+                if metadata.is_symlink() {
+                    symlink_count += 1;
+                    continue; // Skip symlinks
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: Could not access file '{}': {}. Skipping.",
+                    full_path.display(),
+                    e
+                );
+                continue; // Skip files we can't access
+            }
+        }
+
         paths.push(path_buf);
     }
 
-    Ok(paths)
+    Ok((paths, symlink_count))
 }
 
 #[cfg(test)]
@@ -104,7 +132,7 @@ mod tests {
     fn test_discover_tracked_files() {
         let (temp_dir, _repo) = setup_test_repo();
 
-        let (repo_root, files) = discover_tracked_files(temp_dir.path()).unwrap();
+        let (repo_root, files, symlink_count) = discover_tracked_files(temp_dir.path()).unwrap();
         // On macOS, /var is a symlink to /private/var, so we need to canonicalize paths
         assert_eq!(
             repo_root.canonicalize().unwrap(),
@@ -112,6 +140,7 @@ mod tests {
         );
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("test.txt"));
+        assert_eq!(symlink_count, 0);
     }
 
     #[test]
