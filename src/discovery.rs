@@ -81,10 +81,20 @@ fn collect_index_paths(
 
         // Check if the file is a symlink in the actual filesystem
         let full_path = repo_root.join(&path_buf);
-        if let Ok(metadata) = std::fs::symlink_metadata(&full_path) {
-            if metadata.is_symlink() {
-                symlink_count += 1;
-                continue; // Skip symlinks
+        match std::fs::symlink_metadata(&full_path) {
+            Ok(metadata) => {
+                if metadata.is_symlink() {
+                    symlink_count += 1;
+                    continue; // Skip symlinks
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: Could not access file '{}': {}. Skipping.",
+                    full_path.display(),
+                    e
+                );
+                continue; // Skip files we can't access
             }
         }
 

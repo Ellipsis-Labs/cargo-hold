@@ -199,8 +199,8 @@ pub fn stow(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<()>
             let full_path = repo_root.join(path);
             let size = get_file_size(&full_path)?;
             let hash = hash_file(&full_path)?;
-            // Get file metadata (symlinks already filtered out by discover_tracked_files)
-            let metadata = std::fs::metadata(&full_path).map_err(|source| {
+            // Get file metadata (use symlink_metadata for defensive consistency)
+            let metadata = std::fs::symlink_metadata(&full_path).map_err(|source| {
                 crate::error::HoldError::IoError {
                     path: path.clone(),
                     source,
