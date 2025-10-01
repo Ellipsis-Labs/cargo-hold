@@ -43,6 +43,7 @@ use std::time::SystemTime;
 use rayon::prelude::*;
 
 use crate::error::{HoldError, Result};
+use crate::timestamp::saturating_duration_from_nanos;
 
 /// Garbage collection
 #[derive(Debug)]
@@ -1086,10 +1087,15 @@ pub fn select_artifacts_for_removal(
 
     // First, filter out artifacts from the previous build if we have that timestamp
     if let Some(previous_mtime_nanos) = previous_build_mtime_nanos {
-        let mut previous_mtime = SystemTime::UNIX_EPOCH
-            + std::time::Duration::from_nanos(
-                std::cmp::min(previous_mtime_nanos, u64::MAX as u128) as u64,
+        let (duration, saturated) = saturating_duration_from_nanos(previous_mtime_nanos);
+        if saturated && !quiet {
+            eprintln!(
+                "Warning: previous_build_mtime_nanos ({previous_mtime_nanos}) exceeds \
+                 representable range; clamping to ~year 2554.",
             );
+        }
+
+        let mut previous_mtime = SystemTime::UNIX_EPOCH + duration;
         let now = SystemTime::now();
         if previous_mtime > now {
             previous_mtime = now;

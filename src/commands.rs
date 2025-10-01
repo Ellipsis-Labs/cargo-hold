@@ -39,7 +39,9 @@ use crate::gc::{self, Gc};
 use crate::hashing::{get_file_size, hash_file};
 use crate::metadata::{clean_metadata, load_metadata, save_metadata};
 use crate::state::{FileState, StateMetadata};
-use crate::timestamp::{generate_monotonic_timestamp, restore_timestamps};
+use crate::timestamp::{
+    generate_monotonic_timestamp, restore_timestamps, saturating_duration_from_nanos,
+};
 
 /// Executes the anchor command - the main orchestrator.
 ///
@@ -298,8 +300,14 @@ pub fn stow(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) 
     new_metadata.last_gc_mtime_nanos = Some(preservation_nanos);
 
     if !quiet && verbose > 0 {
-        let preserved_time = UNIX_EPOCH
-            + Duration::from_nanos(std::cmp::min(preservation_nanos, u64::MAX as u128) as u64);
+        let (preserved_duration, saturated) = saturating_duration_from_nanos(preservation_nanos);
+        if saturated {
+            eprintln!(
+                "Warning: preservation timestamp ({preservation_nanos}) exceeds representable \
+                 range; clamping to ~year 2554.",
+            );
+        }
+        let preserved_time = UNIX_EPOCH + preserved_duration;
         let elapsed = SystemTime::now()
             .duration_since(preserved_time)
             .unwrap_or(Duration::ZERO)
