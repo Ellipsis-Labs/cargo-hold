@@ -166,21 +166,31 @@ fn test_verbose_output() {
 fn test_quiet_mode() {
     let temp_dir = setup_test_repo();
 
-    // Use absolute path for target directory
+    let binary = env!("CARGO_BIN_EXE_cargo-hold");
     let target_dir = temp_dir.path().join("target");
 
-    let cli = Cli::builder()
-        .target_dir(target_dir)
-        .verbose(0)
-        .quiet(true)
-        .command(Commands::Anchor)
-        .build()
-        .expect("Failed to build Cli");
+    let output = Command::new(binary)
+        .current_dir(temp_dir.path())
+        .args([
+            "anchor",
+            "--quiet",
+            "--target-dir",
+            target_dir.to_str().expect("non-utf8 path"),
+        ])
+        .output()
+        .expect("failed to run cargo-hold anchor --quiet");
 
-    // Execute from the temp directory
-    let result = execute_with_dir(&cli, Some(temp_dir.path()));
-
-    assert!(result.is_ok());
+    assert!(output.status.success());
+    assert!(
+        output.stderr.is_empty(),
+        "stderr not empty: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "stdout not empty: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 }
 
 #[test]
@@ -321,6 +331,27 @@ fn test_voyage_command() {
     // Verify cache was created (from anchor)
     let metadata_path = temp_dir.path().join("target/cargo-hold.metadata");
     assert!(metadata_path.exists());
+}
+
+#[test]
+fn test_voyage_command_from_subdirectory() {
+    let temp_dir = setup_test_repo();
+    let subdir = temp_dir.path().join("nested");
+    fs::create_dir(&subdir).unwrap();
+
+    let voyage_command = Commands::Voyage {
+        max_target_size: None,
+        gc_dry_run: true,
+        gc_debug: false,
+        preserve_cargo_binaries: vec![],
+        gc_age_threshold_days: 7,
+    };
+
+    execute_command_with_dir(voyage_command, &temp_dir, &subdir, 0).unwrap();
+
+    let metadata_path = temp_dir.path().join("target/cargo-hold.metadata");
+    assert!(metadata_path.exists());
+    assert!(!subdir.join("target/cargo-hold.metadata").exists());
 }
 
 /// Helper to create a complete Cargo project with Cargo.toml

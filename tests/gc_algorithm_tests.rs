@@ -126,7 +126,7 @@ fn test_combined_selection_size_and_age() {
     // Set max size to 6KB (need to free 4.5KB)
     // Set age threshold to 10 days (should remove artifacts older than 10 days)
 
-    let selected = select_artifacts_for_removal(&artifacts, 10500, Some(6000), 10, None, 0);
+    let selected = select_artifacts_for_removal(&artifacts, 10500, Some(6000), 10, None, 0, false);
 
     // Should remove:
     // 1. old_large (5KB) to get under size limit (leaves 5.5KB)
@@ -149,7 +149,7 @@ fn test_combined_selection_only_age() {
     // Total size: 4KB, max size: 10KB (no size pressure)
     // Age threshold: 10 days
 
-    let selected = select_artifacts_for_removal(&artifacts, 4000, Some(10000), 10, None, 0);
+    let selected = select_artifacts_for_removal(&artifacts, 4000, Some(10000), 10, None, 0, false);
 
     // Should only remove artifacts older than 10 days
     assert_eq!(selected.len(), 2);
@@ -170,7 +170,7 @@ fn test_combined_selection_only_size() {
     // Total size: 10.5KB, max size: 5KB
     // Age threshold: 30 days (nothing is old enough)
 
-    let selected = select_artifacts_for_removal(&artifacts, 10500, Some(5000), 30, None, 0);
+    let selected = select_artifacts_for_removal(&artifacts, 10500, Some(5000), 30, None, 0, false);
 
     // Should remove oldest first until under size limit
     // Removes: small1 (3 days), large1 (2 days) = 6KB freed (enough to get under
@@ -188,7 +188,7 @@ fn test_combined_selection_no_size_limit() {
         create_test_artifact("new", "2234567890abcdef", 10000, 5),
     ];
 
-    let selected = select_artifacts_for_removal(&artifacts, 20000, None, 10, None, 0);
+    let selected = select_artifacts_for_removal(&artifacts, 20000, None, 10, None, 0, false);
 
     // Should only remove the old artifact
     assert_eq!(selected.len(), 1);
@@ -205,7 +205,7 @@ fn test_combined_selection_everything_removed() {
     ];
 
     // Total: 15KB, max size: 0KB, age threshold: 30 days
-    let selected = select_artifacts_for_removal(&artifacts, 15000, Some(0), 30, None, 0);
+    let selected = select_artifacts_for_removal(&artifacts, 15000, Some(0), 30, None, 0, false);
 
     // All artifacts should be selected for removal
     assert_eq!(selected.len(), 3);
@@ -221,7 +221,7 @@ fn test_combined_selection_exact_size_limit() {
     ];
 
     // Total: 6KB, max size: 6KB exactly
-    let selected = select_artifacts_for_removal(&artifacts, 6000, Some(6000), 10, None, 0);
+    let selected = select_artifacts_for_removal(&artifacts, 6000, Some(6000), 10, None, 0, false);
 
     // Should only remove artifacts older than 10 days
     assert_eq!(selected.len(), 2);
@@ -239,7 +239,7 @@ fn test_combined_selection_zero_age_threshold() {
     ];
 
     // Total: 6KB, max size: 10KB (no size pressure), age threshold: 0 days
-    let selected = select_artifacts_for_removal(&artifacts, 6000, Some(10000), 0, None, 0);
+    let selected = select_artifacts_for_removal(&artifacts, 6000, Some(10000), 0, None, 0, false);
 
     // All artifacts should be removed (all are >= 0 days old)
     assert_eq!(selected.len(), 3);
@@ -264,7 +264,7 @@ fn test_combined_selection_same_timestamps() {
     }
 
     // Total: 6KB, max size: 4KB, age threshold: 10 days
-    let selected = select_artifacts_for_removal(&artifacts, 6000, Some(4000), 10, None, 0);
+    let selected = select_artifacts_for_removal(&artifacts, 6000, Some(4000), 10, None, 0, false);
 
     // Should remove enough for size (at least 2KB) and all are old enough
     // Since they have same timestamp, the order might be implementation-dependent
@@ -279,7 +279,7 @@ fn test_combined_selection_same_timestamps() {
 fn test_combined_selection_empty_list() {
     // Test with empty artifact list
     let artifacts = vec![];
-    let selected = select_artifacts_for_removal(&artifacts, 0, Some(1000), 7, None, 0);
+    let selected = select_artifacts_for_removal(&artifacts, 0, Some(1000), 7, None, 0, false);
     assert_eq!(selected.len(), 0);
 }
 
@@ -323,6 +323,7 @@ fn test_combined_selection_preserves_previous_build_artifacts() {
         30, // High age threshold so it doesn't interfere
         Some(previous_build_nanos),
         2, // verbose
+        false,
     );
 
     // Should only remove the old artifact (5KB), not enough to meet size limit
@@ -367,6 +368,7 @@ fn test_combined_selection_timestamp_buffer_edge_case() {
         30,
         Some(previous_build_nanos),
         0,
+        false,
     );
 
     // With 1-second buffer, artifacts at or near the cutoff should be preserved
@@ -409,6 +411,7 @@ fn test_combined_selection_exceeds_size_for_preservation() {
         30,
         Some(previous_build_nanos),
         0,
+        false,
     );
 
     // Should only select old artifacts
@@ -436,6 +439,7 @@ fn test_combined_selection_no_previous_build_timestamp() {
         30,
         None, // No previous build timestamp
         0,
+        false,
     );
 
     // Should remove oldest first until under size limit
@@ -475,6 +479,7 @@ fn test_combined_selection_all_artifacts_are_recent() {
         30,
         Some(previous_build_nanos),
         0,
+        false,
     );
 
     // Nothing should be selected - all artifacts are preserved
@@ -522,6 +527,7 @@ fn test_combined_selection_mixed_ages_with_preservation() {
         5,
         Some(previous_build_nanos),
         0,
+        false,
     );
 
     // Should remove:
