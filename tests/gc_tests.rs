@@ -291,6 +291,39 @@ fn test_gc_age_based_cleanup() {
 }
 
 #[test]
+fn test_gc_removes_artifacts_with_stale_previous_timestamp() {
+    let temp_dir = TempDir::new().unwrap();
+    let target_dir = setup_target_dir(&temp_dir);
+    let debug_dir = target_dir.join("debug");
+
+    create_crate_artifacts(&debug_dir, "stale-crate", "1234567890abcdef", 512, 10);
+    create_crate_artifacts(&debug_dir, "fresh-crate", "fedcba0987654321", 512, 2);
+
+    let stale_previous = SystemTime::now() - Duration::from_secs(30 * 24 * 60 * 60);
+    let stale_nanos = stale_previous
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    let config = Gc::builder()
+        .target_dir(target_dir.clone())
+        .dry_run(false)
+        .age_threshold_days(7)
+        .previous_build_mtime_nanos(stale_nanos)
+        .build();
+
+    let stats = config.perform_gc(1).unwrap();
+
+    let deps_dir = debug_dir.join("deps");
+    let stale_artifact = deps_dir.join("libstale-crate-1234567890abcdef.rlib");
+    let fresh_artifact = deps_dir.join("libfresh-crate-fedcba0987654321.rlib");
+
+    assert!(stats.bytes_freed > 0, "Expected GC to free bytes");
+    assert!(!stale_artifact.exists(), "Stale artifact should be removed");
+    assert!(fresh_artifact.exists(), "Recent artifact should remain");
+}
+
+#[test]
 fn test_gc_size_based_cleanup() {
     let temp_dir = TempDir::new().unwrap();
     let target_dir = setup_target_dir(&temp_dir);

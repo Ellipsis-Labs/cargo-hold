@@ -337,7 +337,7 @@ fn test_combined_selection_preserves_previous_build_artifacts() {
 
 #[test]
 fn test_combined_selection_timestamp_buffer_edge_case() {
-    // Test the 1-second buffer for timestamp comparison
+    // Test the preservation buffer for timestamp comparison
 
     let now = SystemTime::now();
     let base_time = now.checked_sub(Duration::from_secs(3600)).unwrap();
@@ -354,7 +354,7 @@ fn test_combined_selection_timestamp_buffer_edge_case() {
     artifacts[0].newest_mtime = base_time; // Exactly at cutoff
     artifacts[1].newest_mtime = base_time.checked_sub(Duration::from_millis(500)).unwrap(); // 500ms before
     artifacts[2].newest_mtime = base_time.checked_add(Duration::from_millis(500)).unwrap(); // 500ms after
-    artifacts[3].newest_mtime = base_time.checked_sub(Duration::from_secs(2)).unwrap(); // 2s before
+    artifacts[3].newest_mtime = base_time.checked_sub(Duration::from_secs(6 * 60)).unwrap(); // 6 minutes before
 
     let previous_build_nanos = base_time
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -371,8 +371,8 @@ fn test_combined_selection_timestamp_buffer_edge_case() {
         false,
     );
 
-    // With 1-second buffer, artifacts at or near the cutoff should be preserved
-    // Only well_before_cutoff should be selected
+    // With the 5-minute buffer, artifacts near the cutoff should be preserved; only
+    // those older than the buffer should be selected.
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].name, "well_before_cutoff");
 }

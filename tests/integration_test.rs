@@ -991,6 +991,73 @@ fn test_timestamp_preservation_workflow() {
 }
 
 #[test]
+fn test_heave_preserves_recent_artifact_after_delayed_stow() {
+    let temp_dir = setup_cargo_project();
+
+    // Backdate tracked sources to simulate a previous build finishing an hour ago.
+    let one_hour_ago = SystemTime::now() - Duration::from_secs(3600);
+    let main_rs = temp_dir.path().join("src/main.rs");
+    let lib_rs = temp_dir.path().join("src/lib.rs");
+    let cargo_toml = temp_dir.path().join("Cargo.toml");
+    filetime::set_file_mtime(&main_rs, filetime::FileTime::from_system_time(one_hour_ago)).unwrap();
+    filetime::set_file_mtime(&lib_rs, filetime::FileTime::from_system_time(one_hour_ago)).unwrap();
+    filetime::set_file_mtime(
+        &cargo_toml,
+        filetime::FileTime::from_system_time(one_hour_ago),
+    )
+    .unwrap();
+
+    execute_command(Commands::Stow, &temp_dir, 0).unwrap();
+
+    // Create an artifact representing the most recent build products.
+    let debug_dir = temp_dir.path().join("target/debug");
+    let deps_dir = debug_dir.join("deps");
+    fs::create_dir_all(&deps_dir).unwrap();
+
+    let artifact = deps_dir.join("libdelayed-1234567890abcd12.rlib");
+    fs::write(&artifact, vec![0u8; 32 * 1024]).unwrap();
+    filetime::set_file_mtime(
+        &artifact,
+        filetime::FileTime::from_system_time(one_hour_ago),
+    )
+    .unwrap();
+
+    // Provide the usual fingerprint structure so GC associates the artifact
+    // correctly.
+    let fingerprint = debug_dir.join(".fingerprint/libdelayed-1234567890abcd12");
+    fs::create_dir_all(&fingerprint).unwrap();
+    filetime::set_file_mtime(
+        &fingerprint,
+        filetime::FileTime::from_system_time(one_hour_ago),
+    )
+    .unwrap();
+    let invoked = fingerprint.join("invoked.timestamp");
+    fs::write(&invoked, b"dummy").unwrap();
+    filetime::set_file_mtime(&invoked, filetime::FileTime::from_system_time(one_hour_ago)).unwrap();
+
+    let heave_command = Commands::Heave {
+        max_target_size: Some("1K".to_string()),
+        dry_run: false,
+        debug: true,
+        preserve_cargo_binaries: vec![],
+        age_threshold_days: 30,
+    };
+
+    // If preservation metadata jumps to `now`, this artifact is considered old and
+    // GC deletes it to satisfy the tiny size cap. The fix keeps it.
+    execute_command(heave_command, &temp_dir, 2).unwrap();
+
+    assert!(
+        artifact.exists(),
+        "Recent artifact should remain after heave"
+    );
+    assert!(
+        invoked.exists(),
+        "Fingerprint files should remain after heave"
+    );
+}
+
+#[test]
 fn test_heave_with_preservation_message() {
     // Test that heave shows the preservation message when last_gc_mtime_nanos is
     // set
