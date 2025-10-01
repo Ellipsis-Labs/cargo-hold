@@ -53,14 +53,18 @@ use crate::timestamp::{generate_monotonic_timestamp, restore_timestamps};
 /// * `metadata_path` - Path to the metadata file
 /// * `verbose` - Verbosity level (0 = quiet, 1 = normal, 2+ = detailed)
 /// * `working_dir` - Working directory to operate from
-pub fn anchor(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<()> {
-    eprintln!("⚓ Anchoring build state...");
+pub fn anchor(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) -> Result<()> {
+    if !quiet {
+        eprintln!("⚓ Anchoring build state...");
+    }
 
     // Execute the full workflow
-    salvage(metadata_path, verbose, working_dir)?;
-    stow(metadata_path, verbose, working_dir)?;
+    salvage(metadata_path, verbose, quiet, working_dir)?;
+    stow(metadata_path, verbose, quiet, working_dir)?;
 
-    eprintln!("⚓ Build state anchored successfully");
+    if !quiet {
+        eprintln!("⚓ Build state anchored successfully");
+    }
 
     Ok(())
 }
@@ -76,9 +80,9 @@ pub fn anchor(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<(
 /// * `metadata_path` - Path to the metadata file
 /// * `verbose` - Verbosity level (0 = quiet, 1 = normal, 2+ = detailed)
 /// * `working_dir` - Working directory to operate from
-pub fn salvage(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<()> {
-    if verbose > 0 {
-        eprintln!("Salvaging timestamps from metadata metadata...");
+pub fn salvage(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) -> Result<()> {
+    if !quiet && verbose > 0 {
+        eprintln!("Salvaging timestamps from metadata...");
     }
 
     // Metadata path should already be absolute from CLI layer
@@ -86,14 +90,14 @@ pub fn salvage(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<
     let metadata = load_metadata(metadata_path)?;
 
     if metadata.is_empty() {
-        if verbose > 0 {
+        if !quiet && verbose > 0 {
             eprintln!("Metadata is empty, nothing to restore");
         }
         return Ok(());
     }
 
     // Print metadata metadata info
-    if verbose > 0 {
+    if !quiet && verbose > 0 {
         eprintln!("Metadata:");
         eprintln!("  Format version: {}", metadata.version);
         eprintln!("  Tracked files: {}", metadata.len());
@@ -110,7 +114,7 @@ pub fn salvage(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<
     let (repo_root, tracked_files, symlink_count) = discover_tracked_files(working_dir)?;
 
     // Report symlinks if any were found
-    if symlink_count > 0 {
+    if !quiet && symlink_count > 0 {
         eprintln!(
             "Warning: Skipped {} symbolic link{} (timestamps not needed for symlinks)",
             symlink_count,
@@ -120,9 +124,9 @@ pub fn salvage(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<
 
     // Analyze files to categorize them
     let (unchanged, modified, added) =
-        analyze_files(&repo_root, &tracked_files, &metadata, verbose)?;
+        analyze_files(&repo_root, &tracked_files, &metadata, verbose, quiet)?;
 
-    if verbose > 0 {
+    if !quiet && verbose > 0 {
         eprintln!(
             "Found {} unchanged, {} modified, {} added files",
             unchanged.len(),
@@ -144,18 +148,20 @@ pub fn salvage(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<
         new_mtime,
     )?;
 
-    // Always print summary statistics (not just in verbose mode)
-    eprintln!("Timestamp restoration complete:");
-    eprintln!("  Files analyzed: {}", tracked_files.len());
-    eprintln!(
-        "  Unchanged files (timestamps restored): {}",
-        unchanged.len()
-    );
-    eprintln!(
-        "  Modified files (new timestamp applied): {}",
-        modified.len()
-    );
-    eprintln!("  New files (new timestamp applied): {}", added.len());
+    // Summary statistics (suppressed in quiet mode)
+    if !quiet {
+        eprintln!("Timestamp restoration complete:");
+        eprintln!("  Files analyzed: {}", tracked_files.len());
+        eprintln!(
+            "  Unchanged files (timestamps restored): {}",
+            unchanged.len()
+        );
+        eprintln!(
+            "  Modified files (new timestamp applied): {}",
+            modified.len()
+        );
+        eprintln!("  New files (new timestamp applied): {}", added.len());
+    }
 
     Ok(())
 }
@@ -171,20 +177,20 @@ pub fn salvage(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<
 /// * `metadata_path` - Path to the metadata file
 /// * `verbose` - Verbosity level (0 = quiet, 1 = normal, 2+ = detailed)
 /// * `working_dir` - Working directory to operate from
-pub fn stow(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<()> {
-    if verbose > 0 {
+pub fn stow(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) -> Result<()> {
+    if !quiet && verbose > 0 {
         eprintln!("Stowing files in cargo hold...");
     }
 
     // Discover tracked files - these are already relative to repo root
     let (repo_root, tracked_files, symlink_count) = discover_tracked_files(working_dir)?;
 
-    if verbose > 0 {
+    if !quiet && verbose > 0 {
         eprintln!("Found {} tracked files", tracked_files.len());
     }
 
     // Report symlinks if any were found
-    if symlink_count > 0 {
+    if !quiet && symlink_count > 0 {
         eprintln!(
             "Note: Skipped {} symbolic link{} (not stored in metadata)",
             symlink_count,
@@ -237,18 +243,22 @@ pub fn stow(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<()>
             Ok(state) => {
                 if let Err(e) = new_metadata.upsert(state) {
                     errors += 1;
-                    eprintln!("Warning: Failed to add file to metadata: {e:?}");
+                    if !quiet {
+                        eprintln!("Warning: Failed to add file to metadata: {e:?}");
+                    }
                 }
             }
             Err(e) => {
                 errors += 1;
-                eprintln!("Warning: Failed to analyze file: {e:?}");
+                if !quiet {
+                    eprintln!("Warning: Failed to analyze file: {e:?}");
+                }
             }
         }
     }
 
     // Report errors if any
-    if errors > 0 {
+    if errors > 0 && !quiet {
         eprintln!("Warning: Failed to analyze {errors} file(s)");
         if verbose == 0 {
             eprintln!("Run with -v for more details");
@@ -256,11 +266,17 @@ pub fn stow(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<()>
     }
 
     // Load existing metadata to get the previous max_mtime_nanos
-    let existing_metadata = load_metadata(metadata_path).ok();
+    let existing_metadata = match load_metadata(metadata_path) {
+        Ok(metadata) => Some(metadata),
+        Err(HoldError::DeserializationError { .. }) => None,
+        Err(err) => return Err(err),
+    };
+
     if let Some(existing) = existing_metadata {
         // Preserve the max mtime from the current build as the last_gc_mtime_nanos
         new_metadata.last_gc_mtime_nanos = existing.max_mtime_nanos();
-        if verbose > 0
+        if !quiet
+            && verbose > 0
             && let Some(mtime) = new_metadata.last_gc_mtime_nanos
         {
             eprintln!("Preserving previous build timestamp for GC: {mtime} nanos");
@@ -278,18 +294,20 @@ pub fn stow(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<()>
 
     save_metadata(&new_metadata, metadata_path)?;
 
-    // Always print summary statistics
-    eprintln!("File scan complete:");
-    eprintln!("  Files tracked: {}", tracked_files.len());
-    eprintln!("  Metadata entries: {}", new_metadata.len());
-    if errors > 0 {
-        eprintln!("  Files skipped: {errors} (errors)");
-    }
-    eprintln!("  Metadata saved to: {}", metadata_path.display());
+    // Summary statistics
+    if !quiet {
+        eprintln!("File scan complete:");
+        eprintln!("  Files tracked: {}", tracked_files.len());
+        eprintln!("  Metadata entries: {}", new_metadata.len());
+        if errors > 0 {
+            eprintln!("  Files skipped: {errors} (errors)");
+        }
+        eprintln!("  Metadata saved to: {}", metadata_path.display());
 
-    // Print metadata metadata file size
-    if let Ok(metadata) = std::fs::metadata(metadata_path) {
-        eprintln!("  Metadata size: {} KB", metadata.len() / 1024);
+        // Print metadata metadata file size
+        if let Ok(metadata) = std::fs::metadata(metadata_path) {
+            eprintln!("  Metadata size: {} KB", metadata.len() / 1024);
+        }
     }
 
     Ok(())
@@ -304,15 +322,15 @@ pub fn stow(metadata_path: &Path, verbose: u8, working_dir: &Path) -> Result<()>
 ///
 /// * `metadata_path` - Path to the metadata file
 /// * `verbose` - Verbosity level (0 = quiet, 1 = normal, 2+ = detailed)
-pub fn bilge(metadata_path: &Path, verbose: u8) -> Result<()> {
+pub fn bilge(metadata_path: &Path, verbose: u8, quiet: bool) -> Result<()> {
     // No need to discover repository - metadata path is already absolute
-    if verbose > 0 {
-        eprintln!("Bilging out metadata metadata at {metadata_path:?}");
+    if !quiet && verbose > 0 {
+        eprintln!("Bilging out metadata at {metadata_path:?}");
     }
 
     clean_metadata(metadata_path)?;
 
-    if verbose > 0 {
+    if !quiet && verbose > 0 {
         eprintln!("Metadata bilged successfully");
     }
 
@@ -329,6 +347,7 @@ pub struct Heave<'a> {
     age_threshold_days: u32,
     verbose: u8,
     metadata_path: Option<&'a Path>,
+    quiet: bool,
 }
 
 /// Builder for constructing [`Heave`] command instances.
@@ -345,6 +364,7 @@ pub struct HeaveBuilder<'a> {
     age_threshold_days: u32,
     verbose: u8,
     metadata_path: Option<&'a Path>,
+    quiet: bool,
 }
 
 impl<'a> HeaveBuilder<'a> {
@@ -359,6 +379,7 @@ impl<'a> HeaveBuilder<'a> {
             age_threshold_days: 7,
             verbose: 0,
             metadata_path: None,
+            quiet: false,
         }
     }
 
@@ -413,6 +434,12 @@ impl<'a> HeaveBuilder<'a> {
         self
     }
 
+    /// Set whether output should be silenced (quiet mode).
+    pub fn quiet(mut self, quiet: bool) -> Self {
+        self.quiet = quiet;
+        self
+    }
+
     /// Build the [`Heave`] instance with the configured parameters.
     pub fn build(self) -> Heave<'a> {
         Heave {
@@ -424,6 +451,7 @@ impl<'a> HeaveBuilder<'a> {
             age_threshold_days: self.age_threshold_days,
             verbose: self.verbose,
             metadata_path: self.metadata_path,
+            quiet: self.quiet,
         }
     }
 }
@@ -435,7 +463,7 @@ impl<'a> Heave<'a> {
 
     /// Execute the heave command (garbage collection)
     pub fn heave(self) -> Result<()> {
-        if self.verbose > 0 {
+        if !self.quiet && self.verbose > 0 {
             eprintln!("Heave ho! Starting garbage collection...");
         }
 
@@ -453,7 +481,9 @@ impl<'a> Heave<'a> {
             None
         };
 
-        if let Some(mtime) = last_gc_mtime_nanos {
+        if !self.quiet
+            && let Some(mtime) = last_gc_mtime_nanos
+        {
             let mtime_secs = (mtime / 1_000_000_000) as u64;
             eprintln!(
                 "Using previous build timestamp for artifact preservation ({}s ago)",
@@ -470,7 +500,8 @@ impl<'a> Heave<'a> {
             .dry_run(self.dry_run)
             .debug(self.debug || self.verbose >= 2)
             .age_threshold_days(self.age_threshold_days)
-            .preserve_binaries(self.preserve_cargo_binaries.to_vec());
+            .preserve_binaries(self.preserve_cargo_binaries.to_vec())
+            .quiet(self.quiet);
 
         if let Some(size) = max_size {
             builder = builder.max_target_size(size);
@@ -485,17 +516,18 @@ impl<'a> Heave<'a> {
         // Perform garbage collection
         let stats = config.perform_gc(self.verbose)?;
 
-        // Always report results
-        eprintln!("Garbage collection complete:");
-        eprintln!("  Initial size: {}", gc::format_size(stats.initial_size));
-        eprintln!("  Final size: {}", gc::format_size(stats.final_size));
-        eprintln!("  Space freed: {}", gc::format_size(stats.bytes_freed));
-        eprintln!("  Artifacts removed: {}", stats.artifacts_removed);
-        eprintln!("  Crates cleaned: {}", stats.crates_cleaned);
-        eprintln!("  Binaries preserved: {}", stats.binaries_preserved);
+        if !self.quiet {
+            eprintln!("Garbage collection complete:");
+            eprintln!("  Initial size: {}", gc::format_size(stats.initial_size));
+            eprintln!("  Final size: {}", gc::format_size(stats.final_size));
+            eprintln!("  Space freed: {}", gc::format_size(stats.bytes_freed));
+            eprintln!("  Artifacts removed: {}", stats.artifacts_removed);
+            eprintln!("  Crates cleaned: {}", stats.crates_cleaned);
+            eprintln!("  Binaries preserved: {}", stats.binaries_preserved);
 
-        if self.dry_run {
-            eprintln!("  (DRY RUN - no files were actually deleted)");
+            if self.dry_run {
+                eprintln!("  (DRY RUN - no files were actually deleted)");
+            }
         }
 
         Ok(())
@@ -512,6 +544,8 @@ pub struct Voyage<'a> {
     preserve_cargo_binaries: &'a [String],
     gc_age_threshold_days: u32,
     verbose: u8,
+    working_dir: &'a Path,
+    quiet: bool,
 }
 
 impl<'a> Voyage<'a> {
@@ -522,17 +556,21 @@ impl<'a> Voyage<'a> {
 
     /// Execute the voyage (anchor + heave)
     pub fn run(self) -> Result<()> {
-        eprintln!("🚢 Setting sail on voyage (anchor + heave)...");
+        if !self.quiet {
+            eprintln!("🚢 Setting sail on voyage (anchor + heave)...");
+        }
 
-        // Step 1: Run anchor
-        // Need to get current directory for anchor
-        let current_dir = std::env::current_dir().map_err(|source| HoldError::IoError {
-            path: PathBuf::from("."),
-            source,
-        })?;
-        anchor(self.metadata_path, self.verbose, &current_dir)?;
+        // Step 1: Run anchor from the caller-provided working directory
+        anchor(
+            self.metadata_path,
+            self.verbose,
+            self.quiet,
+            self.working_dir,
+        )?;
 
-        eprintln!("🧹 Starting garbage collection...");
+        if !self.quiet {
+            eprintln!("🧹 Starting garbage collection...");
+        }
 
         // Step 2: Run heave
         Heave::builder()
@@ -544,10 +582,13 @@ impl<'a> Voyage<'a> {
             .age_threshold_days(self.gc_age_threshold_days)
             .verbose(self.verbose)
             .metadata_path(self.metadata_path)
+            .quiet(self.quiet)
             .build()
             .heave()?;
 
-        eprintln!("🚢 Voyage completed successfully!");
+        if !self.quiet {
+            eprintln!("🚢 Voyage completed successfully!");
+        }
 
         Ok(())
     }
@@ -563,6 +604,8 @@ pub struct VoyageBuilder<'a> {
     preserve_cargo_binaries: &'a [String],
     gc_age_threshold_days: u32,
     verbose: u8,
+    working_dir: Option<&'a Path>,
+    quiet: bool,
 }
 
 impl Default for VoyageBuilder<'_> {
@@ -576,6 +619,8 @@ impl Default for VoyageBuilder<'_> {
             preserve_cargo_binaries: &[],
             gc_age_threshold_days: 7, // Default to 7 days
             verbose: 0,
+            working_dir: None,
+            quiet: false,
         }
     }
 }
@@ -636,6 +681,18 @@ impl<'a> VoyageBuilder<'a> {
         self
     }
 
+    /// Set quiet mode for voyage operations.
+    pub fn quiet(mut self, quiet: bool) -> Self {
+        self.quiet = quiet;
+        self
+    }
+
+    /// Set the working directory for voyage operations.
+    pub fn working_dir(mut self, working_dir: &'a Path) -> Self {
+        self.working_dir = Some(working_dir);
+        self
+    }
+
     /// Build the [`Voyage`] instance with the configured parameters.
     pub fn build(self) -> Result<Voyage<'a>> {
         Ok(Voyage {
@@ -651,6 +708,10 @@ impl<'a> VoyageBuilder<'a> {
             preserve_cargo_binaries: self.preserve_cargo_binaries,
             gc_age_threshold_days: self.gc_age_threshold_days,
             verbose: self.verbose,
+            working_dir: self.working_dir.ok_or_else(|| HoldError::ConfigError {
+                message: "working_dir is required".to_string(),
+            })?,
+            quiet: self.quiet,
         })
     }
 }
@@ -661,6 +722,7 @@ fn analyze_files(
     tracked_files: &[PathBuf],
     metadata: &StateMetadata,
     verbose: u8,
+    quiet: bool,
 ) -> Result<(Vec<FileState>, Vec<PathBuf>, Vec<PathBuf>)> {
     let mut unchanged = Vec::new();
     let mut modified = Vec::new();
@@ -703,7 +765,7 @@ fn analyze_files(
             FileCategory::Added => added.push(path),
             FileCategory::Error => {
                 errors.push(path.clone());
-                if verbose > 1 {
+                if !quiet && verbose > 1 {
                     eprintln!("Warning: Could not analyze file {path:?}");
                 }
             }
@@ -711,7 +773,7 @@ fn analyze_files(
     }
 
     // If there were any errors, report them
-    if !errors.is_empty() {
+    if !errors.is_empty() && !quiet {
         eprintln!("Warning: Failed to analyze {} file(s)", errors.len());
         if verbose == 0 {
             eprintln!("Run with -v for more details");
@@ -785,7 +847,8 @@ pub fn execute(cli: &Cli) -> Result<()> {
 /// Returns `Ok(())` on success, or an error if the command fails.
 pub fn execute_with_dir(cli: &Cli, working_dir: Option<&Path>) -> Result<()> {
     // Set up logging verbosity
-    let verbose = if cli.global_opts().quiet() {
+    let quiet = cli.global_opts().quiet();
+    let verbose = if quiet {
         0
     } else {
         cli.global_opts().verbose()
@@ -809,10 +872,10 @@ pub fn execute_with_dir(cli: &Cli, working_dir: Option<&Path>) -> Result<()> {
 
     // Execute the appropriate command
     match cli.command() {
-        Commands::Anchor => anchor(&metadata_path, verbose, &current_dir),
-        Commands::Salvage => salvage(&metadata_path, verbose, &current_dir),
-        Commands::Stow => stow(&metadata_path, verbose, &current_dir),
-        Commands::Bilge => bilge(&metadata_path, verbose),
+        Commands::Anchor => anchor(&metadata_path, verbose, quiet, &current_dir),
+        Commands::Salvage => salvage(&metadata_path, verbose, quiet, &current_dir),
+        Commands::Stow => stow(&metadata_path, verbose, quiet, &current_dir),
+        Commands::Bilge => bilge(&metadata_path, verbose, quiet),
         Commands::Heave {
             max_target_size,
             dry_run,
@@ -828,6 +891,7 @@ pub fn execute_with_dir(cli: &Cli, working_dir: Option<&Path>) -> Result<()> {
             .age_threshold_days(*age_threshold_days)
             .verbose(verbose)
             .metadata_path(&metadata_path)
+            .quiet(quiet)
             .build()
             .heave(),
         Commands::Voyage {
@@ -845,6 +909,8 @@ pub fn execute_with_dir(cli: &Cli, working_dir: Option<&Path>) -> Result<()> {
             .preserve_cargo_binaries(preserve_cargo_binaries)
             .gc_age_threshold_days(*gc_age_threshold_days)
             .verbose(verbose)
+            .quiet(quiet)
+            .working_dir(&current_dir)
             .build()?
             .run(),
     }
@@ -857,6 +923,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::metadata::save_metadata;
+    use crate::state::{METADATA_VERSION, StateMetadata};
 
     fn setup_git_repo() -> TempDir {
         let temp_dir = TempDir::new().unwrap();
@@ -880,7 +948,7 @@ mod tests {
         let temp_dir = setup_git_repo();
         let metadata_path = temp_dir.path().join("test.metadata");
 
-        stow(&metadata_path, 0, temp_dir.path()).unwrap();
+        stow(&metadata_path, 0, false, temp_dir.path()).unwrap();
         assert!(metadata_path.exists());
         let metadata = load_metadata(&metadata_path).unwrap();
         assert_eq!(metadata.len(), 1);
@@ -898,7 +966,7 @@ mod tests {
         let metadata_path = temp_dir.path().join("test.metadata");
 
         // Run stow from subdirectory - it should find the parent git repo
-        stow(&metadata_path, 0, &subdir).unwrap();
+        stow(&metadata_path, 0, false, &subdir).unwrap();
         assert!(metadata_path.exists());
         let metadata = load_metadata(&metadata_path).unwrap();
         assert_eq!(metadata.len(), 1);
@@ -915,10 +983,10 @@ mod tests {
         let metadata_path = temp_dir.path().join("test.metadata");
 
         // First stow from the root
-        stow(&metadata_path, 0, temp_dir.path()).unwrap();
+        stow(&metadata_path, 0, false, temp_dir.path()).unwrap();
 
         // Now run salvage from subdirectory
-        salvage(&metadata_path, 0, &subdir).unwrap();
+        salvage(&metadata_path, 0, false, &subdir).unwrap();
     }
 
     #[test]
@@ -927,11 +995,11 @@ mod tests {
         let metadata_path = temp_dir.path().join("test.metadata");
 
         // Create metadata first
-        stow(&metadata_path, 0, temp_dir.path()).unwrap();
+        stow(&metadata_path, 0, false, temp_dir.path()).unwrap();
         assert!(metadata_path.exists());
 
         // Bilge it
-        bilge(&metadata_path, 0).unwrap();
+        bilge(&metadata_path, 0, false).unwrap();
         assert!(!metadata_path.exists());
     }
 
@@ -941,11 +1009,25 @@ mod tests {
         let metadata_path = temp_dir.path().join("test.metadata");
 
         // Run anchor
-        anchor(&metadata_path, 0, temp_dir.path()).unwrap();
+        anchor(&metadata_path, 0, false, temp_dir.path()).unwrap();
 
         // Metadata should exist
         assert!(metadata_path.exists());
         let metadata = load_metadata(&metadata_path).unwrap();
         assert_eq!(metadata.len(), 1);
+    }
+
+    #[test]
+    fn test_stow_propagates_future_metadata_error() {
+        let temp_dir = setup_git_repo();
+        let metadata_path = temp_dir.path().join("test.metadata");
+
+        // Persist metadata with a future format version
+        let mut metadata = StateMetadata::new();
+        metadata.version = METADATA_VERSION + 1;
+        save_metadata(&metadata, &metadata_path).unwrap();
+
+        let err = stow(&metadata_path, 0, false, temp_dir.path()).unwrap_err();
+        assert!(matches!(err, HoldError::ConfigError { .. }));
     }
 }

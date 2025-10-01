@@ -61,6 +61,8 @@ pub struct Gc {
     preserve_binaries: Vec<String>,
     /// Timestamp of the previous build to preserve artifacts from
     previous_build_mtime_nanos: Option<u128>,
+    /// Suppress informational logging when true
+    quiet: bool,
 }
 
 impl Gc {
@@ -104,6 +106,11 @@ impl Gc {
         self.previous_build_mtime_nanos
     }
 
+    /// Check if quiet mode is enabled
+    pub fn quiet(&self) -> bool {
+        self.quiet
+    }
+
     /// Main entry point for garbage collection
     ///
     /// Performs comprehensive garbage collection on build artifacts using a
@@ -129,7 +136,7 @@ impl Gc {
     pub fn perform_gc(&self, verbose: u8) -> Result<GcStats> {
         let mut stats = GcStats::default();
 
-        if verbose > 0 || self.debug() {
+        if !self.quiet() && (verbose > 0 || self.debug()) {
             eprintln!("Starting garbage collection in {:?}", self.target_dir());
             eprintln!("Cleanup criteria:");
             if let Some(max_size) = self.max_target_size() {
@@ -148,28 +155,30 @@ impl Gc {
             0
         };
 
-        // Always provide feedback about the operation
-        eprintln!("Cleanup status:");
-        eprintln!("  Current size: {}", format_size(stats.initial_size));
+        if !self.quiet() {
+            // Always provide feedback about the operation
+            eprintln!("Cleanup status:");
+            eprintln!("  Current size: {}", format_size(stats.initial_size));
 
-        if let Some(max_size) = self.max_target_size() {
-            eprintln!("  Target size: {}", format_size(max_size));
-            if stats.initial_size > max_size {
-                eprintln!(
-                    "  Need to free: {} (for size limit)",
-                    format_size(stats.initial_size - max_size)
-                );
-            } else {
-                eprintln!("  Already within target size");
+            if let Some(max_size) = self.max_target_size() {
+                eprintln!("  Target size: {}", format_size(max_size));
+                if stats.initial_size > max_size {
+                    eprintln!(
+                        "  Need to free: {} (for size limit)",
+                        format_size(stats.initial_size - max_size)
+                    );
+                } else {
+                    eprintln!("  Already within target size");
+                }
             }
-        }
 
-        eprintln!("  Age threshold: {} days", self.age_threshold_days());
+            eprintln!("  Age threshold: {} days", self.age_threshold_days());
+        }
 
         // Clean profile directories
         let profile_dirs = find_profile_directories(self.target_dir())?;
         for profile_dir in profile_dirs {
-            if verbose > 0 {
+            if !self.quiet() && verbose > 0 {
                 eprintln!("Cleaning profile directory: {profile_dir:?}");
             }
             let profile_stats = clean_profile_directory(&profile_dir, self, verbose, &stats)?;
@@ -183,13 +192,13 @@ impl Gc {
         stats.bytes_freed += clean_misc_directories(self.target_dir(), self, verbose)?;
 
         // Clean cargo registry and downloads
-        if verbose > 0 {
+        if !self.quiet() && verbose > 0 {
             eprintln!("Cleaning cargo registry...");
         }
         stats.bytes_freed += self.clean_cargo_registry(verbose)?;
 
         // Clean cargo binaries
-        if verbose > 0 {
+        if !self.quiet() && verbose > 0 {
             eprintln!("Cleaning cargo binaries...");
         }
         stats.bytes_freed += self.clean_cargo_bin(verbose)?;
@@ -228,7 +237,7 @@ impl Gc {
         // Remove credentials
         let credentials_file = cargo_home.join("credentials.toml");
         if credentials_file.exists() {
-            if verbose > 0 {
+            if !self.quiet() && verbose > 0 {
                 eprintln!("Removing cargo credentials");
             }
             let size = fs::metadata(&credentials_file)
@@ -311,7 +320,7 @@ impl Gc {
             return Ok(0);
         }
 
-        if verbose > 0 {
+        if !self.quiet() && verbose > 0 {
             eprintln!("Cleaning old cargo binaries...");
         }
 
@@ -367,7 +376,7 @@ impl Gc {
                         && modified < cutoff
                     {
                         let size = metadata.len();
-                        if verbose > 1 {
+                        if !self.quiet() && verbose > 1 {
                             eprintln!("  Removing old cargo binary: {name} (older than 30 days)");
                         }
                         if !self.dry_run() {
@@ -391,7 +400,7 @@ impl Gc {
             ))
             .unwrap_or(SystemTime::UNIX_EPOCH);
 
-        if verbose > 1 {
+        if !self.quiet() && verbose > 1 {
             eprintln!("  Cleaning old files in {dir:?} (>{age_threshold_days} days)");
         }
 
@@ -437,7 +446,7 @@ impl Gc {
             ))
             .unwrap_or(SystemTime::UNIX_EPOCH);
 
-        if verbose > 1 {
+        if !self.quiet() && verbose > 1 {
             eprintln!("  Cleaning old directories in {dir:?} (>{age_threshold_days} days)");
         }
 
@@ -484,6 +493,7 @@ impl Default for Gc {
             age_threshold_days: 7,
             preserve_binaries: Vec::new(),
             previous_build_mtime_nanos: None,
+            quiet: false,
         }
     }
 }
@@ -498,6 +508,7 @@ pub struct GcBuilder {
     age_threshold_days: Option<u32>,
     preserve_binaries: Vec<String>,
     previous_build_mtime_nanos: Option<u128>,
+    quiet: bool,
 }
 
 impl GcBuilder {
@@ -549,6 +560,12 @@ impl GcBuilder {
         self
     }
 
+    /// Enable or disable quiet mode
+    pub fn quiet(mut self, quiet: bool) -> Self {
+        self.quiet = quiet;
+        self
+    }
+
     /// Build the [`Gc`]
     pub fn build(self) -> Gc {
         Gc {
@@ -559,6 +576,7 @@ impl GcBuilder {
             age_threshold_days: self.age_threshold_days.unwrap_or(7),
             preserve_binaries: self.preserve_binaries,
             previous_build_mtime_nanos: self.previous_build_mtime_nanos,
+            quiet: self.quiet,
         }
     }
 }
@@ -743,13 +761,13 @@ fn clean_profile_directory(
     let mut stats = GcStats::default();
 
     // First, preserve binaries
-    let binaries = preserve_binaries(profile_dir, verbose)?;
+    let binaries = preserve_binaries(profile_dir, verbose, config.quiet())?;
     stats.binaries_preserved = binaries.len();
 
     // Remove incremental compilation data
     let incremental_dir = profile_dir.join("incremental");
     if incremental_dir.exists() {
-        if verbose > 0 {
+        if !config.quiet() && verbose > 0 {
             eprintln!("  Removing incremental compilation data");
         }
         let size = calculate_directory_size(&incremental_dir)?;
@@ -765,7 +783,7 @@ fn clean_profile_directory(
     // Collect and analyze crate artifacts
     let crate_artifacts = collect_crate_artifacts(profile_dir)?;
 
-    if verbose > 1 {
+    if !config.quiet() && verbose > 1 {
         eprintln!("  Found {} crate artifacts", crate_artifacts.len());
     }
 
@@ -774,7 +792,7 @@ fn clean_profile_directory(
     let current_total_size = global_stats
         .initial_size
         .saturating_sub(global_stats.bytes_freed + stats.bytes_freed);
-    if verbose > 1 || config.debug() {
+    if !config.quiet() && (verbose > 1 || config.debug()) {
         eprintln!(
             "  Initial: {}, Freed globally: {}, Freed locally: {}, Current total: {}",
             format_size(global_stats.initial_size),
@@ -791,15 +809,16 @@ fn clean_profile_directory(
         config.age_threshold_days(),
         config.previous_build_mtime_nanos(),
         verbose,
+        config.quiet(),
     );
 
-    if verbose > 1 || config.debug() {
+    if !config.quiet() && (verbose > 1 || config.debug()) {
         eprintln!("  Selected {} crates for removal", to_remove.len());
     }
 
     // Remove selected crates
     for crate_artifact in to_remove {
-        if verbose > 1 {
+        if !config.quiet() && verbose > 1 {
             eprintln!(
                 "  Removing {}-{} ({})",
                 crate_artifact.name,
@@ -821,7 +840,7 @@ fn clean_profile_directory(
 }
 
 /// Preserve binary files in the profile directory
-fn preserve_binaries(profile_dir: &Path, verbose: u8) -> Result<Vec<PathBuf>> {
+fn preserve_binaries(profile_dir: &Path, verbose: u8, quiet: bool) -> Result<Vec<PathBuf>> {
     let mut binaries = Vec::new();
 
     let entries = fs::read_dir(profile_dir).map_err(|source| HoldError::IoError {
@@ -847,7 +866,7 @@ fn preserve_binaries(profile_dir: &Path, verbose: u8) -> Result<Vec<PathBuf>> {
                     let has_no_extension = path.extension().is_none();
 
                     if is_executable && has_no_extension {
-                        if verbose > 1 {
+                        if !quiet && verbose > 1 {
                             eprintln!("  Preserving binary: {:?}", path.file_name().unwrap());
                         }
                         binaries.push(path);
@@ -859,7 +878,7 @@ fn preserve_binaries(profile_dir: &Path, verbose: u8) -> Result<Vec<PathBuf>> {
             {
                 // On Windows, check for .exe extension
                 if path.extension().map_or(false, |ext| ext == "exe") {
-                    if verbose > 1 {
+                    if !quiet && verbose > 1 {
                         eprintln!("  Preserving binary: {:?}", path.file_name().unwrap());
                     }
                     binaries.push(path);
@@ -1060,6 +1079,7 @@ pub fn select_artifacts_for_removal(
     age_threshold_days: u32,
     previous_build_mtime_nanos: Option<u128>,
     verbose: u8,
+    quiet: bool,
 ) -> Vec<&CrateArtifact> {
     let mut to_remove = Vec::new();
     let mut remaining_artifacts: Vec<&CrateArtifact> = crate_artifacts.iter().collect();
@@ -1080,7 +1100,7 @@ pub fn select_artifacts_for_removal(
             .into_iter()
             .partition(|artifact| artifact.newest_mtime >= cutoff_time);
 
-        if !preserved.is_empty() {
+        if !quiet && !preserved.is_empty() {
             let preserved_size: u64 = preserved.iter().map(|a| a.total_size).sum();
             eprintln!(
                 "  Preserving {} artifacts ({}) from previous build",
@@ -1099,15 +1119,19 @@ pub fn select_artifacts_for_removal(
 
     // Step 1: Apply size-based cleanup if needed
     if let Some(max_size) = max_size {
-        eprintln!(
-            "  Size-based cleanup: current={}, max={}",
-            format_size(current_size),
-            format_size(max_size)
-        );
+        if !quiet {
+            eprintln!(
+                "  Size-based cleanup: current={}, max={}",
+                format_size(current_size),
+                format_size(max_size)
+            );
+        }
 
         if current_size > max_size {
             let needed = current_size - max_size;
-            eprintln!("  Need to free: {}", format_size(needed));
+            if !quiet {
+                eprintln!("  Need to free: {}", format_size(needed));
+            }
 
             // Sort by age (oldest first)
             remaining_artifacts.sort_by_key(|a| a.newest_mtime);
@@ -1126,18 +1150,22 @@ pub fn select_artifacts_for_removal(
 
             remaining_artifacts = kept_artifacts;
 
-            eprintln!(
-                "  Size cleanup will remove {} crates, freeing {}",
-                to_remove.len(),
-                format_size(freed)
-            );
-        } else {
+            if !quiet {
+                eprintln!(
+                    "  Size cleanup will remove {} crates, freeing {}",
+                    to_remove.len(),
+                    format_size(freed)
+                );
+            }
+        } else if !quiet {
             eprintln!("  Already within target size");
         }
     }
 
     // Step 2: Apply age-based cleanup on remaining artifacts
-    eprintln!("  Age-based cleanup: removing artifacts older than {age_threshold_days} days");
+    if !quiet {
+        eprintln!("  Age-based cleanup: removing artifacts older than {age_threshold_days} days");
+    }
 
     let cutoff = SystemTime::now()
         .checked_sub(std::time::Duration::from_secs(
@@ -1156,7 +1184,7 @@ pub fn select_artifacts_for_removal(
             .unwrap_or(0);
 
         if artifact.newest_mtime < cutoff {
-            if verbose > 1 {
+            if !quiet && verbose > 1 {
                 eprintln!(
                     "    Removing old crate {}: age={} days",
                     artifact.name, age_days
@@ -1168,11 +1196,13 @@ pub fn select_artifacts_for_removal(
         }
     }
 
-    eprintln!(
-        "  Age cleanup will remove {} additional crates, freeing {}",
-        age_removed_count,
-        format_size(age_removed_size)
-    );
+    if !quiet {
+        eprintln!(
+            "  Age cleanup will remove {} additional crates, freeing {}",
+            age_removed_count,
+            format_size(age_removed_size)
+        );
+    }
 
     to_remove
 }
@@ -1205,7 +1235,7 @@ fn clean_misc_directories(target_dir: &Path, config: &Gc, verbose: u8) -> Result
     for dir_name in &["doc", "package", "tmp"] {
         let dir = target_dir.join(dir_name);
         if dir.exists() {
-            if verbose > 0 {
+            if verbose > 0 && !config.quiet() {
                 eprintln!("Removing directory: {}", dir.display());
             }
 
@@ -1380,6 +1410,7 @@ mod tests {
             1,                     // 1 day age threshold
             Some(previous_build_nanos),
             0, // verbose
+            false,
         );
 
         // Should preserve artifacts from ten_minutes_ago and five_minutes_ago
@@ -1396,6 +1427,7 @@ mod tests {
             1,                     // 1 day age threshold
             None,                  // No previous build timestamp
             0,                     // verbose
+            false,
         );
 
         // Should remove very-old-crate (age) and others for size

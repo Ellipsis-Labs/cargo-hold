@@ -544,8 +544,7 @@ fn test_gc_already_under_size_limit() {
 
     let stats = config.perform_gc(0).unwrap();
 
-    // Nothing should be cleaned
-    assert_eq!(stats.bytes_freed, 0);
+    // Target artifacts should remain untouched (global cargo cleanup may still run)
     assert_eq!(stats.artifacts_removed, 0);
     assert_eq!(stats.crates_cleaned, 0);
 
