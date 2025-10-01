@@ -43,6 +43,7 @@ use std::time::SystemTime;
 use rayon::prelude::*;
 
 use crate::error::{HoldError, Result};
+use crate::timestamp::saturating_duration_from_nanos;
 
 /// Garbage collection
 #[derive(Debug)]
@@ -1086,35 +1087,69 @@ pub fn select_artifacts_for_removal(
 
     // First, filter out artifacts from the previous build if we have that timestamp
     if let Some(previous_mtime_nanos) = previous_build_mtime_nanos {
-        // Convert to SystemTime for comparison
-        let previous_mtime =
-            SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(previous_mtime_nanos as u64);
-
-        // Add a small buffer (1 second) to account for timestamp precision/drift
-        let buffer = std::time::Duration::from_secs(1);
-        let cutoff_time = previous_mtime
-            .checked_sub(buffer)
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-
-        let (preserved, eligible): (Vec<_>, Vec<_>) = remaining_artifacts
-            .into_iter()
-            .partition(|artifact| artifact.newest_mtime >= cutoff_time);
-
-        if !quiet && !preserved.is_empty() {
-            let preserved_size: u64 = preserved.iter().map(|a| a.total_size).sum();
+        let (duration, saturated) = saturating_duration_from_nanos(previous_mtime_nanos);
+        if saturated && !quiet {
             eprintln!(
-                "  Preserving {} artifacts ({}) from previous build",
-                preserved.len(),
-                format_size(preserved_size)
+                "Warning: previous_build_mtime_nanos ({previous_mtime_nanos}) exceeds \
+                 representable range; clamping to ~year 2554.",
             );
-            if verbose > 1 {
-                for artifact in &preserved {
-                    eprintln!("    Preserving: {}-{}", artifact.name, artifact.hash);
-                }
-            }
         }
 
-        remaining_artifacts = eligible;
+        let mut previous_mtime = SystemTime::UNIX_EPOCH + duration;
+        let now = SystemTime::now();
+        if previous_mtime > now {
+            previous_mtime = now;
+        }
+
+        if age_threshold_days == 0 {
+            if !quiet && verbose > 1 {
+                eprintln!("  Skipping previous build preservation because age threshold is 0 days");
+            }
+        } else {
+            let age_threshold =
+                std::time::Duration::from_secs(age_threshold_days as u64 * 24 * 60 * 60);
+            let elapsed_since_previous = now
+                .duration_since(previous_mtime)
+                .unwrap_or(std::time::Duration::ZERO);
+
+            let previous_is_stale = elapsed_since_previous > age_threshold;
+
+            if previous_is_stale {
+                if !quiet && verbose > 0 {
+                    eprintln!(
+                        "  Previous build timestamp is {elapsed_since_previous:?} old; exceeding \
+                         threshold, skipping preservation",
+                    );
+                }
+            } else {
+                // Add a generous buffer to account for clock drift and build finishing before
+                // GC.
+                let buffer = std::time::Duration::from_secs(5 * 60);
+                let cutoff_time = previous_mtime
+                    .checked_sub(buffer)
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+
+                let (preserved, eligible): (Vec<_>, Vec<_>) = remaining_artifacts
+                    .into_iter()
+                    .partition(|artifact| artifact.newest_mtime >= cutoff_time);
+
+                if !quiet && !preserved.is_empty() {
+                    let preserved_size: u64 = preserved.iter().map(|a| a.total_size).sum();
+                    eprintln!(
+                        "  Preserving {} artifacts ({}) from previous build",
+                        preserved.len(),
+                        format_size(preserved_size)
+                    );
+                    if verbose > 1 {
+                        for artifact in &preserved {
+                            eprintln!("    Preserving: {}-{}", artifact.name, artifact.hash);
+                        }
+                    }
+                }
+
+                remaining_artifacts = eligible;
+            }
+        }
     }
 
     // Step 1: Apply size-based cleanup if needed
@@ -1295,6 +1330,8 @@ fn calculate_directory_size(path: &Path) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, SystemTime};
+
     use super::*;
 
     #[test]
@@ -1437,5 +1474,90 @@ mod tests {
                 .iter()
                 .any(|a| a.name == "very-old-crate")
         );
+    }
+
+    #[test]
+    fn test_select_artifacts_skips_stale_previous_timestamp() {
+        let now = SystemTime::now();
+        let ten_days_ago = now - Duration::from_secs(10 * 24 * 60 * 60);
+        let two_days_ago = now - Duration::from_secs(2 * 24 * 60 * 60);
+        let stale_previous = now - Duration::from_secs(30 * 24 * 60 * 60);
+
+        let stale_nanos = stale_previous
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+
+        let artifacts = vec![
+            CrateArtifact {
+                name: "old-crate".to_string(),
+                hash: "aaaaaaaaaaaaaaaa".to_string(),
+                artifacts: vec![],
+                total_size: 2 * 1024 * 1024,
+                newest_mtime: ten_days_ago,
+            },
+            CrateArtifact {
+                name: "recent-crate".to_string(),
+                hash: "bbbbbbbbbbbbbbbb".to_string(),
+                artifacts: vec![],
+                total_size: 2 * 1024 * 1024,
+                newest_mtime: two_days_ago,
+            },
+        ];
+
+        let to_remove = select_artifacts_for_removal(
+            &artifacts,
+            4 * 1024 * 1024,
+            None,
+            7,
+            Some(stale_nanos),
+            0,
+            false,
+        );
+
+        assert_eq!(to_remove.len(), 1);
+        assert_eq!(to_remove[0].name, "old-crate");
+    }
+
+    #[test]
+    fn test_select_artifacts_preserves_recent_previous_timestamp_with_buffer() {
+        let now = SystemTime::now();
+        let two_minutes_ago = now - Duration::from_secs(2 * 60);
+        let eight_days_ago = now - Duration::from_secs(8 * 24 * 60 * 60);
+
+        let previous_build_nanos = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+
+        let artifacts = vec![
+            CrateArtifact {
+                name: "recent-build".to_string(),
+                hash: "cccccccccccccccc".to_string(),
+                artifacts: vec![],
+                total_size: 3 * 1024 * 1024,
+                newest_mtime: two_minutes_ago,
+            },
+            CrateArtifact {
+                name: "older-build".to_string(),
+                hash: "dddddddddddddddd".to_string(),
+                artifacts: vec![],
+                total_size: 3 * 1024 * 1024,
+                newest_mtime: eight_days_ago,
+            },
+        ];
+
+        let to_remove = select_artifacts_for_removal(
+            &artifacts,
+            6 * 1024 * 1024,
+            Some(1024 * 1024),
+            7,
+            Some(previous_build_nanos),
+            0,
+            false,
+        );
+
+        assert_eq!(to_remove.len(), 1);
+        assert_eq!(to_remove[0].name, "older-build");
     }
 }

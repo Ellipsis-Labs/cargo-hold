@@ -28,6 +28,7 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
 
@@ -38,7 +39,9 @@ use crate::gc::{self, Gc};
 use crate::hashing::{get_file_size, hash_file};
 use crate::metadata::{clean_metadata, load_metadata, save_metadata};
 use crate::state::{FileState, StateMetadata};
-use crate::timestamp::{generate_monotonic_timestamp, restore_timestamps};
+use crate::timestamp::{
+    generate_monotonic_timestamp, restore_timestamps, saturating_duration_from_nanos,
+};
 
 /// Executes the anchor command - the main orchestrator.
 ///
@@ -265,22 +268,51 @@ pub fn stow(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) 
         }
     }
 
-    // Load existing metadata to get the previous max_mtime_nanos
+    // Load existing metadata so we can capture prior preservation timestamp
     let existing_metadata = match load_metadata(metadata_path) {
         Ok(metadata) => Some(metadata),
         Err(HoldError::DeserializationError { .. }) => None,
         Err(err) => return Err(err),
     };
 
-    if let Some(existing) = existing_metadata {
-        // Preserve the max mtime from the current build as the last_gc_mtime_nanos
-        new_metadata.last_gc_mtime_nanos = existing.max_mtime_nanos();
-        if !quiet
-            && verbose > 0
-            && let Some(mtime) = new_metadata.last_gc_mtime_nanos
-        {
-            eprintln!("Preserving previous build timestamp for GC: {mtime} nanos");
+    // Establish a preservation timestamp for GC without clobbering historical
+    // build information. Prefer the previously recorded value, falling back to
+    // the most recent tracked file mtime. Only use the current clock if we have
+    // no metadata at all (first run).
+    let existing_preservation = existing_metadata.as_ref().and_then(|existing| {
+        existing
+            .last_gc_mtime_nanos
+            .or_else(|| existing.max_mtime_nanos())
+    });
+
+    let new_max_mtime = new_metadata.max_mtime_nanos();
+
+    let preservation_nanos = match (existing_preservation, new_max_mtime) {
+        (Some(existing), Some(new_max)) => existing.max(new_max),
+        (Some(existing), None) => existing,
+        (None, Some(new_max)) => new_max,
+        (None, None) => SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_nanos(),
+    };
+
+    new_metadata.last_gc_mtime_nanos = Some(preservation_nanos);
+
+    if !quiet && verbose > 0 {
+        let (preserved_duration, saturated) = saturating_duration_from_nanos(preservation_nanos);
+        if saturated {
+            eprintln!(
+                "Warning: preservation timestamp ({preservation_nanos}) exceeds representable \
+                 range; clamping to ~year 2554.",
+            );
         }
+        let preserved_time = UNIX_EPOCH + preserved_duration;
+        let elapsed = SystemTime::now()
+            .duration_since(preserved_time)
+            .unwrap_or(Duration::ZERO)
+            .as_secs();
+        eprintln!("Preserving build timestamp for GC: {preservation_nanos} nanos ({elapsed}s ago)",);
     }
 
     // Metadata path should already be absolute from CLI layer
@@ -919,7 +951,9 @@ pub fn execute_with_dir(cli: &Cli, working_dir: Option<&Path>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    use filetime::FileTime;
     use tempfile::TempDir;
 
     use super::*;
@@ -1029,5 +1063,35 @@ mod tests {
 
         let err = stow(&metadata_path, 0, false, temp_dir.path()).unwrap_err();
         assert!(matches!(err, HoldError::ConfigError { .. }));
+    }
+
+    #[test]
+    fn test_stow_preserves_last_gc_timestamp_when_time_advances() {
+        let temp_dir = setup_git_repo();
+        let metadata_path = temp_dir.path().join("test.metadata");
+        let tracked_file = temp_dir.path().join("test.txt");
+
+        // Simulate a build finishing an hour ago by backdating the tracked file.
+        let one_hour_ago = SystemTime::now() - Duration::from_secs(3600);
+        filetime::set_file_mtime(&tracked_file, FileTime::from_system_time(one_hour_ago)).unwrap();
+
+        stow(&metadata_path, 0, false, temp_dir.path()).unwrap();
+        let first_metadata = load_metadata(&metadata_path).unwrap();
+        let first_preservation = first_metadata
+            .last_gc_mtime_nanos
+            .expect("stow should set last_gc_mtime_nanos");
+        let expected_nanos = one_hour_ago.duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        assert_eq!(first_preservation, expected_nanos);
+
+        // Allow the wall clock to move forward before running stow again.
+        std::thread::sleep(Duration::from_millis(10));
+
+        stow(&metadata_path, 0, false, temp_dir.path()).unwrap();
+        let second_metadata = load_metadata(&metadata_path).unwrap();
+        let second_preservation = second_metadata
+            .last_gc_mtime_nanos
+            .expect("stow should keep last_gc_mtime_nanos set");
+
+        assert_eq!(second_preservation, expected_nanos);
     }
 }

@@ -3,12 +3,38 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+const NANOS_PER_SECOND: u128 = 1_000_000_000;
+
+/// Compute a duration from nanoseconds with saturation at [`Duration::MAX`].
+///
+/// Returns the saturated duration along with a flag indicating whether the
+/// input exceeded the representable range.
+pub fn saturating_duration_from_nanos(nanos: u128) -> (Duration, bool) {
+    let seconds = nanos / NANOS_PER_SECOND;
+    if seconds > u64::MAX as u128 {
+        return (Duration::MAX, true);
+    }
+
+    let nanos_remainder = (nanos % NANOS_PER_SECOND) as u32;
+    (Duration::new(seconds as u64, nanos_remainder), false)
+}
+
+/// Compute a [`SystemTime`] from nanoseconds with saturation at
+/// `UNIX_EPOCH + Duration::MAX`.
+///
+/// Returns the saturated timestamp along with a flag indicating whether the
+/// input exceeded the representable range.
+pub fn saturating_system_time_from_nanos(nanos: u128) -> (SystemTime, bool) {
+    let (duration, saturated) = saturating_duration_from_nanos(nanos);
+    (UNIX_EPOCH + duration, saturated)
+}
+
 use crate::error::{HoldError, Result};
 use crate::state::{FileState, StateMetadata};
 
 /// Convert nanoseconds since UNIX_EPOCH to SystemTime
 fn nanos_to_system_time(nanos: u128) -> SystemTime {
-    UNIX_EPOCH + Duration::from_nanos(nanos as u64)
+    saturating_system_time_from_nanos(nanos).0
 }
 
 /// Convert SystemTime to nanoseconds since UNIX_EPOCH
