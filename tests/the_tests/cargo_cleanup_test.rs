@@ -4,13 +4,14 @@ use std::fs;
 use std::time::{Duration, SystemTime};
 
 use cargo_hold::gc::Gc;
-use tempfile::TempDir;
+
+use crate::common::TempHomeGuard;
 
 #[test]
 fn test_clean_cargo_registry_with_mock_home() {
     // Create a temporary directory to act as cargo home
-    let temp_dir = TempDir::new().unwrap();
-    let cargo_home = temp_dir.path();
+    let home = TempHomeGuard::new();
+    let cargo_home = home.cargo_home();
 
     // Set up .cargo/registry/cache with old files
     let cache_dir = cargo_home
@@ -31,14 +32,14 @@ fn test_clean_cargo_registry_with_mock_home() {
 
     // Run clean_cargo_registry with mock home
     let config = Gc::builder()
-        .target_dir(temp_dir.path().join("target"))
+        .target_dir(home.home().join("target"))
         .dry_run(false)
         .debug(false)
         .age_threshold_days(7)
         .build();
 
     let bytes_freed = config
-        .clean_cargo_registry_with_home(cargo_home, 0)
+        .clean_cargo_registry_with_home(&cargo_home, 0)
         .unwrap();
 
     // Verify old file is removed and new file is kept
@@ -50,8 +51,8 @@ fn test_clean_cargo_registry_with_mock_home() {
 #[test]
 fn test_clean_cargo_bin_with_mock_home() {
     // Create a temporary directory to act as cargo home
-    let temp_dir = TempDir::new().unwrap();
-    let cargo_home = temp_dir.path();
+    let home = TempHomeGuard::new();
+    let cargo_home = home.cargo_home();
     let bin_dir = cargo_home.join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
 
@@ -102,14 +103,14 @@ fn test_clean_cargo_bin_with_mock_home() {
 
     // Run clean_cargo_bin with mock home
     let config = Gc::builder()
-        .target_dir(temp_dir.path().join("target"))
+        .target_dir(home.home().join("target"))
         .dry_run(false)
         .debug(false)
         .age_threshold_days(7)
         .preserve_binary("my-tool")
         .build();
 
-    let bytes_freed = config.clean_cargo_bin_with_home(cargo_home, 0).unwrap();
+    let bytes_freed = config.clean_cargo_bin_with_home(&cargo_home, 0).unwrap();
 
     // Verify results
     assert!(!old_binary.exists(), "Old binary should be removed");
@@ -125,8 +126,8 @@ fn test_clean_cargo_bin_with_mock_home() {
 fn test_gc_cleans_cargo_home_even_with_missing_target() {
     // This test verifies the behavior we fixed - that GC cleans ~/.cargo
     // even when the target directory doesn't exist
-    let temp_dir = TempDir::new().unwrap();
-    let nonexistent_target = temp_dir.path().join("does_not_exist");
+    let home = TempHomeGuard::new();
+    let nonexistent_target = home.home().join("does_not_exist");
 
     let config = Gc::builder()
         .target_dir(nonexistent_target)

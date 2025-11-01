@@ -5,6 +5,8 @@ use std::time::{Duration, SystemTime};
 use cargo_hold::gc::{self, Gc};
 use tempfile::TempDir;
 
+use crate::common::TempHomeGuard;
+
 #[test]
 fn test_gc_config_builder() {
     // Test default builder
@@ -185,6 +187,7 @@ fn test_format_size() {
 
 #[test]
 fn test_gc_age_based_cleanup() {
+    let _home = TempHomeGuard::new();
     let temp_dir = TempDir::new().unwrap();
     let target_dir = setup_target_dir(&temp_dir);
 
@@ -292,6 +295,7 @@ fn test_gc_age_based_cleanup() {
 
 #[test]
 fn test_gc_removes_artifacts_with_stale_previous_timestamp() {
+    let _home = TempHomeGuard::new();
     let temp_dir = TempDir::new().unwrap();
     let target_dir = setup_target_dir(&temp_dir);
     let debug_dir = target_dir.join("debug");
@@ -325,6 +329,7 @@ fn test_gc_removes_artifacts_with_stale_previous_timestamp() {
 
 #[test]
 fn test_gc_size_based_cleanup() {
+    let _home = TempHomeGuard::new();
     let temp_dir = TempDir::new().unwrap();
     let target_dir = setup_target_dir(&temp_dir);
 
@@ -369,6 +374,7 @@ fn test_gc_size_based_cleanup() {
 
 #[test]
 fn test_gc_dry_run() {
+    let _home = TempHomeGuard::new();
     let temp_dir = TempDir::new().unwrap();
     let target_dir = setup_target_dir(&temp_dir);
 
@@ -401,6 +407,7 @@ fn test_gc_dry_run() {
 
 #[test]
 fn test_gc_incremental_cleanup() {
+    let _home = TempHomeGuard::new();
     let temp_dir = TempDir::new().unwrap();
     let target_dir = setup_target_dir(&temp_dir);
 
@@ -427,6 +434,7 @@ fn test_gc_incremental_cleanup() {
 
 #[test]
 fn test_gc_misc_directories() {
+    let _home = TempHomeGuard::new();
     let temp_dir = TempDir::new().unwrap();
     let target_dir = temp_dir.path().join("target");
 
@@ -462,6 +470,7 @@ fn test_gc_misc_directories() {
 
 #[test]
 fn test_gc_preserve_binaries() {
+    let _home = TempHomeGuard::new();
     let temp_dir = TempDir::new().unwrap();
     let target_dir = setup_target_dir(&temp_dir);
 
@@ -531,6 +540,7 @@ fn test_gc_preserve_binaries() {
 
 #[test]
 fn test_gc_empty_target_dir() {
+    let _home = TempHomeGuard::new();
     let temp_dir = TempDir::new().unwrap();
     let target_dir = temp_dir.path().join("nonexistent");
 
@@ -559,6 +569,7 @@ fn test_gc_empty_target_dir() {
 
 #[test]
 fn test_gc_already_under_size_limit() {
+    let _home = TempHomeGuard::new();
     let temp_dir = TempDir::new().unwrap();
     let target_dir = setup_target_dir(&temp_dir);
 
@@ -592,13 +603,8 @@ fn test_gc_already_under_size_limit() {
 
 #[test]
 fn test_cargo_registry_cleanup() {
-    // Skip this test if we can't determine home directory
-    let Some(_home_dir) = home::home_dir() else {
-        return;
-    };
-
-    let temp_cargo = TempDir::new().unwrap();
-    let cargo_dir = temp_cargo.path();
+    let home = TempHomeGuard::new();
+    let cargo_dir = home.cargo_home();
 
     // Create mock cargo directories
     let registry_cache = cargo_dir
@@ -622,6 +628,7 @@ fn test_cargo_registry_cleanup() {
 
 #[test]
 fn test_multiple_profile_directories() {
+    let _home = TempHomeGuard::new();
     let temp_dir = TempDir::new().unwrap();
     let target_dir = temp_dir.path().join("target");
 

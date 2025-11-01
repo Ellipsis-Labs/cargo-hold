@@ -9,9 +9,38 @@ use cargo_hold::commands::execute_with_dir;
 use cargo_hold::error::Result;
 use miette::{Context, IntoDiagnostic};
 
+use crate::common::TempHomeGuard;
+
+struct TestWorkspace {
+    dir: TempDir,
+    _home: TempHomeGuard,
+}
+
+impl TestWorkspace {
+    fn new() -> Self {
+        let home = TempHomeGuard::new();
+        let dir = TempDir::new().unwrap();
+        Self { dir, _home: home }
+    }
+}
+
+impl std::ops::Deref for TestWorkspace {
+    type Target = TempDir;
+
+    fn deref(&self) -> &Self::Target {
+        &self.dir
+    }
+}
+
+impl std::ops::DerefMut for TestWorkspace {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.dir
+    }
+}
+
 /// Helper to create a test Git repository
-fn setup_test_repo() -> TempDir {
-    let temp_dir = TempDir::new().unwrap();
+fn setup_test_repo() -> TestWorkspace {
+    let temp_dir = TestWorkspace::new();
 
     // Initialize git repo
     let repo = git2::Repository::init(temp_dir.path()).unwrap();
@@ -260,7 +289,7 @@ fn test_new_file_detection() {
 
 #[test]
 fn test_not_in_git_repo() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = TestWorkspace::new();
 
     // Try to run in non-git directory
     let result = execute_command(Commands::Anchor, &temp_dir, 0);
@@ -355,8 +384,8 @@ fn test_voyage_command_from_subdirectory() {
 }
 
 /// Helper to create a complete Cargo project with Cargo.toml
-fn setup_cargo_project() -> TempDir {
-    let temp_dir = TempDir::new().unwrap();
+fn setup_cargo_project() -> TestWorkspace {
+    let temp_dir = TestWorkspace::new();
 
     // Initialize git repo
     let repo = git2::Repository::init(temp_dir.path()).unwrap();
@@ -552,7 +581,7 @@ fn test_core_voyage_workflow_integration() {
 
     // Step 3: Reset all source file timestamps to current time (simulating CI cache
     // restoration)
-    std::thread::sleep(Duration::from_millis(100)); // Ensure time difference
+    std::thread::sleep(Duration::from_secs(1)); // Ensure time difference
     reset_source_timestamps(temp_dir.path()).unwrap();
 
     // Step 4: Run voyage again to restore proper timestamps
@@ -607,7 +636,7 @@ fn test_incremental_build_simulation() {
     assert!(build_output.status.success());
 
     // Modify a single source file
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(Duration::from_secs(1));
     fs::write(
         &main_rs,
         r#"fn main() {
@@ -665,7 +694,7 @@ fn test_cache_restoration_after_timestamp_reset() {
 
     // Simulate checkout/clone where all timestamps become current
     let before_reset = SystemTime::now();
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(Duration::from_secs(1));
     reset_source_timestamps(temp_dir.path()).unwrap();
 
     // Verify timestamps were actually changed to current time
@@ -799,7 +828,7 @@ fn test_salvage_from_subdirectory() {
 #[test]
 fn test_command_from_workspace_member() {
     // Setup a workspace with multiple members
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = TestWorkspace::new();
 
     // Initialize git repo
     let repo = git2::Repository::init(temp_dir.path()).unwrap();
@@ -902,7 +931,7 @@ fn test_timestamp_preservation_workflow() {
     assert!(fs::metadata(&metadata_path).unwrap().len() > 0);
 
     // Step 2: Modify a file to simulate a build
-    std::thread::sleep(Duration::from_millis(100)); // Ensure time difference
+    std::thread::sleep(Duration::from_secs(1)); // Ensure time difference
     let main_rs = temp_dir.path().join("src/main.rs");
     fs::write(
         &main_rs,
@@ -991,6 +1020,59 @@ fn test_timestamp_preservation_workflow() {
 }
 
 #[test]
+fn test_heave_removes_old_artifacts_by_age() {
+    let temp_dir = setup_cargo_project();
+
+    // Capture metadata so GC has preservation context.
+    execute_command(Commands::Stow, &temp_dir, 0).unwrap();
+
+    let debug_dir = temp_dir.path().join("target/debug");
+    let deps_dir = debug_dir.join("deps");
+    fs::create_dir_all(&deps_dir).unwrap();
+
+    let fingerprint_dir = debug_dir.join(".fingerprint");
+    fs::create_dir_all(&fingerprint_dir).unwrap();
+
+    // Create an artifact well beyond the age threshold.
+    let old_artifact = deps_dir.join("libancient-aaaaaaaaaaaaaaaa.rlib");
+    fs::write(&old_artifact, vec![0u8; 2048]).unwrap();
+    let very_old_time = SystemTime::now()
+        .checked_sub(Duration::from_secs(40 * 24 * 60 * 60 + 60))
+        .unwrap();
+    let old_filetime = filetime::FileTime::from_system_time(very_old_time);
+    filetime::set_file_mtime(&old_artifact, old_filetime).unwrap();
+
+    let old_fingerprint = fingerprint_dir.join("libancient-aaaaaaaaaaaaaaaa");
+    fs::create_dir_all(&old_fingerprint).unwrap();
+    filetime::set_file_mtime(&old_fingerprint, old_filetime).unwrap();
+
+    // Create a recent artifact that should remain after GC.
+    let fresh_artifact = deps_dir.join("libfresh-bbbbbbbbbbbbbbbb.rlib");
+    fs::write(&fresh_artifact, vec![0u8; 4096]).unwrap();
+    let fresh_fingerprint = fingerprint_dir.join("libfresh-bbbbbbbbbbbbbbbb");
+    fs::create_dir_all(&fresh_fingerprint).unwrap();
+
+    let heave_command = Commands::Heave {
+        max_target_size: None,
+        dry_run: false,
+        debug: true,
+        preserve_cargo_binaries: vec![],
+        age_threshold_days: 7,
+    };
+
+    execute_command(heave_command, &temp_dir, 2).unwrap();
+
+    assert!(
+        !old_artifact.exists(),
+        "Artifacts older than the threshold should be removed"
+    );
+    assert!(
+        fresh_artifact.exists(),
+        "Recent artifacts should remain when only age-based cleanup applies"
+    );
+}
+
+#[test]
 fn test_heave_preserves_recent_artifact_after_delayed_stow() {
     let temp_dir = setup_cargo_project();
 
@@ -1067,7 +1149,7 @@ fn test_heave_with_preservation_message() {
 
     // Run stow twice to establish last_gc_mtime_nanos
     execute_command(Commands::Stow, &temp_dir, 0).unwrap();
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(Duration::from_secs(1));
     execute_command(Commands::Stow, &temp_dir, 0).unwrap();
 
     // Metadata should now have last_gc_mtime_nanos set
