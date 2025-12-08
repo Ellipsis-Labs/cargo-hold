@@ -273,6 +273,7 @@ Cleans up old build artifacts to reclaim disk space while preserving important f
 - `--debug`: Show detailed information during cleanup
 - `--preserve-cargo-binaries <NAMES>`: Additional binaries to keep in ~/.cargo/bin
 - `--age-threshold-days <DAYS>`: Age threshold for artifact removal (default: 7)
+- `--auto-max-target-size`: Enable/disable automatic size cap suggestion (default: true; pass `=false` to disable)
 
 **Cleanup strategy:**
 
@@ -297,6 +298,13 @@ cargo-hold tracks the timestamp of the previous build and ensures those artifact
 - The `heave` command uses this timestamp to protect artifacts from the previous build
 - Even if your cache exceeds the configured size limit after a build, the most recent artifacts remain safe
 - This significantly improves cache effectiveness in CI environments
+
+**Auto-sizing (default on):**
+
+`heave` records per-run GC metrics (initial size, bytes freed, suggested cap) in
+`target/cargo-hold.metadata` and, when no `--max-target-size` is provided, automatically picks a
+cap with conservative headroom based on recent runs and the first full build it observed. Override
+or disable with `--auto-max-target-size=false` or by providing an explicit `--max-target-size`.
 
 **Also cleans:**
 
@@ -338,6 +346,7 @@ This all-in-one command is perfect for CI pipelines that need both timestamp man
 - `--gc-dry-run`: Preview what would be cleaned without deleting (GC only)
 - `--gc-debug`: Show detailed debug output during garbage collection
 - `--preserve-cargo-binaries <NAMES>`: Additional binaries to preserve in ~/.cargo/bin
+- `--gc-auto-max-target-size`: Enable/disable auto sizing (default: enabled; can also be set false)
 - `--gc-age-threshold-days <DAYS>`: Age threshold for garbage collection (default: 7)
 
 **Perfect for CI because:**

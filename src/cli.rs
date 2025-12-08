@@ -391,6 +391,10 @@ pub enum Commands {
         /// Age threshold in days for removing artifacts (default: 7)
         #[arg(long, default_value = "7", env = "CARGO_HOLD_AGE_THRESHOLD_DAYS")]
         age_threshold_days: u32,
+
+        /// Enable auto max-target-size suggestions derived from prior runs.
+        #[arg(long, default_value_t = true, env = "CARGO_HOLD_AUTO_MAX_TARGET_SIZE")]
+        auto_max_target_size: bool,
     },
 
     /// Full voyage - anchor and heave in one command
@@ -425,6 +429,10 @@ pub enum Commands {
         /// Age threshold in days for garbage collection (default: 7)
         #[arg(long, default_value = "7", env = "CARGO_HOLD_GC_AGE_THRESHOLD_DAYS")]
         gc_age_threshold_days: u32,
+
+        /// Enable auto max-target-size suggestions derived from prior runs.
+        #[arg(long, default_value_t = true, env = "CARGO_HOLD_AUTO_MAX_TARGET_SIZE")]
+        gc_auto_max_target_size: bool,
     },
 }
 

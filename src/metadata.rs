@@ -99,6 +99,7 @@ fn load_metadata_inner(metadata_path: &Path) -> Result<StateMetadata> {
 /// This function handles the migration path for each version upgrade.
 /// Currently handles:
 /// - v1 -> v2: Adds the last_gc_mtime_nanos field (defaults to None)
+/// - v2 -> v3: Adds gc_metrics with defaults
 ///
 /// # Arguments
 ///
@@ -115,11 +116,12 @@ fn migrate_metadata(mut metadata: StateMetadata) -> Result<StateMetadata> {
         metadata.version = 2;
     }
 
-    // Future migrations would go here
-    // if metadata.version == 2 {
-    //     // v2 -> v3 migration logic
-    //     metadata.version = 3;
-    // }
+    // Migration from v2 to v3
+    if metadata.version == 2 {
+        // Initialize GC metrics with defaults to preserve forward compatibility.
+        metadata.gc_metrics = Default::default();
+        metadata.version = 3;
+    }
 
     Ok(metadata)
 }
@@ -305,7 +307,22 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata_migration_v1_to_v2() {
+    fn test_metadata_migration_v2_to_v3_adds_gc_metrics() {
+        let temp_dir = TempDir::new().unwrap();
+        let metadata_path = temp_dir.path().join("test.metadata");
+
+        // Simulate v2 metadata on disk.
+        let mut metadata = StateMetadata::new();
+        metadata.version = 2;
+        save_metadata(&metadata, &metadata_path).unwrap();
+
+        let loaded = load_metadata(&metadata_path).unwrap();
+        assert_eq!(loaded.version, METADATA_VERSION);
+        assert_eq!(loaded.gc_metrics.runs, 0);
+    }
+
+    #[test]
+    fn test_metadata_migration_v1_to_v3() {
         let temp_dir = TempDir::new().unwrap();
         let metadata_path = temp_dir.path().join("test.metadata");
 
@@ -324,11 +341,12 @@ mod tests {
         // Save with v1
         save_metadata(&metadata, &metadata_path).unwrap();
 
-        // Load should migrate to v2
+        // Load should migrate to latest
         let loaded_metadata = load_metadata(&metadata_path).unwrap();
-        assert_eq!(loaded_metadata.version, 2);
+        assert_eq!(loaded_metadata.version, METADATA_VERSION);
         assert_eq!(loaded_metadata.len(), 1);
         assert!(loaded_metadata.last_gc_mtime_nanos.is_none()); // Should be None after migration
+        assert_eq!(loaded_metadata.gc_metrics.runs, 0);
     }
 
     #[test]
@@ -471,10 +489,11 @@ mod tests {
         let migrated = migrate_metadata(v1_metadata).unwrap();
 
         // Verify migration occurred
-        assert_eq!(migrated.version, METADATA_VERSION); // Should be v2 now
+        assert_eq!(migrated.version, METADATA_VERSION); // Should be current now
         assert_eq!(migrated.len(), 1);
         assert!(migrated.get(Path::new("legacy.rs")).unwrap().is_some());
-        assert!(migrated.last_gc_mtime_nanos.is_none()); // v1->v2 migration preserves None
+        assert!(migrated.last_gc_mtime_nanos.is_none()); // migration preserves None
+        assert_eq!(migrated.gc_metrics.runs, 0);
     }
 
     #[test]
