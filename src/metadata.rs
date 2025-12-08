@@ -1,11 +1,32 @@
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 
 use memmap2::Mmap;
+use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::error::{HoldError, Result};
-use crate::state::{METADATA_VERSION, StateMetadata};
+use crate::state::{FileState, GcMetrics, METADATA_VERSION, StateMetadata};
+
+/// Legacy layout for v2 metadata files (without GC metrics).
+#[derive(Archive, Deserialize, Serialize, Debug, Clone)]
+struct StateMetadataV2 {
+    pub version: u32,
+    pub files: HashMap<String, FileState>,
+    pub last_gc_mtime_nanos: Option<u128>,
+}
+
+impl From<StateMetadataV2> for StateMetadata {
+    fn from(v2: StateMetadataV2) -> Self {
+        StateMetadata {
+            version: v2.version,
+            files: v2.files,
+            last_gc_mtime_nanos: v2.last_gc_mtime_nanos,
+            gc_metrics: GcMetrics::default(),
+        }
+    }
+}
 
 /// Loads the state metadata from disk using zero-copy deserialization.
 ///
@@ -68,9 +89,22 @@ fn load_metadata_inner(metadata_path: &Path) -> Result<StateMetadata> {
         source,
     })?;
 
-    // Deserialize using rkyv
-    let metadata = rkyv::from_bytes::<StateMetadata, rkyv::rancor::BoxedError>(&mmap[..])
-        .map_err(|source| HoldError::DeserializationError { source })?;
+    // Deserialize using rkyv, with fallback to the v2 layout that didn't
+    // include GC metrics. This ensures older v2 metadata can still be loaded
+    // and migrated forward without being treated as incompatible.
+    let metadata = match rkyv::from_bytes::<StateMetadata, rkyv::rancor::BoxedError>(&mmap[..]) {
+        Ok(metadata) => metadata,
+        Err(primary_err) => {
+            match rkyv::from_bytes::<StateMetadataV2, rkyv::rancor::BoxedError>(&mmap[..]) {
+                Ok(v2) => StateMetadata::from(v2),
+                Err(_) => {
+                    return Err(HoldError::DeserializationError {
+                        source: primary_err,
+                    });
+                }
+            }
+        }
+    };
 
     // Check version compatibility
     if metadata.version > METADATA_VERSION {
@@ -99,6 +133,7 @@ fn load_metadata_inner(metadata_path: &Path) -> Result<StateMetadata> {
 /// This function handles the migration path for each version upgrade.
 /// Currently handles:
 /// - v1 -> v2: Adds the last_gc_mtime_nanos field (defaults to None)
+/// - v2 -> v3: Adds gc_metrics with defaults
 ///
 /// # Arguments
 ///
@@ -115,11 +150,12 @@ fn migrate_metadata(mut metadata: StateMetadata) -> Result<StateMetadata> {
         metadata.version = 2;
     }
 
-    // Future migrations would go here
-    // if metadata.version == 2 {
-    //     // v2 -> v3 migration logic
-    //     metadata.version = 3;
-    // }
+    // Migration from v2 to v3
+    if metadata.version == 2 {
+        // Initialize GC metrics with defaults to preserve forward compatibility.
+        metadata.gc_metrics = Default::default();
+        metadata.version = 3;
+    }
 
     Ok(metadata)
 }
@@ -203,6 +239,7 @@ pub fn clean_metadata(metadata_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use std::time::SystemTime;
 
@@ -305,7 +342,26 @@ mod tests {
     }
 
     #[test]
-    fn test_metadata_migration_v1_to_v2() {
+    fn test_metadata_migration_v2_to_v3_adds_gc_metrics() {
+        let temp_dir = TempDir::new().unwrap();
+        let metadata_path = temp_dir.path().join("test.metadata");
+
+        // Simulate v2 metadata on disk (without gc_metrics field).
+        let v2 = StateMetadataV2 {
+            version: 2,
+            files: HashMap::new(),
+            last_gc_mtime_nanos: None,
+        };
+        let bytes = rkyv::to_bytes::<rkyv::rancor::BoxedError>(&v2).unwrap();
+        std::fs::write(&metadata_path, bytes).unwrap();
+
+        let loaded = load_metadata(&metadata_path).unwrap();
+        assert_eq!(loaded.version, METADATA_VERSION);
+        assert_eq!(loaded.gc_metrics.runs, 0);
+    }
+
+    #[test]
+    fn test_metadata_migration_v1_to_v3() {
         let temp_dir = TempDir::new().unwrap();
         let metadata_path = temp_dir.path().join("test.metadata");
 
@@ -324,11 +380,12 @@ mod tests {
         // Save with v1
         save_metadata(&metadata, &metadata_path).unwrap();
 
-        // Load should migrate to v2
+        // Load should migrate to latest
         let loaded_metadata = load_metadata(&metadata_path).unwrap();
-        assert_eq!(loaded_metadata.version, 2);
+        assert_eq!(loaded_metadata.version, METADATA_VERSION);
         assert_eq!(loaded_metadata.len(), 1);
         assert!(loaded_metadata.last_gc_mtime_nanos.is_none()); // Should be None after migration
+        assert_eq!(loaded_metadata.gc_metrics.runs, 0);
     }
 
     #[test]
@@ -471,10 +528,11 @@ mod tests {
         let migrated = migrate_metadata(v1_metadata).unwrap();
 
         // Verify migration occurred
-        assert_eq!(migrated.version, METADATA_VERSION); // Should be v2 now
+        assert_eq!(migrated.version, METADATA_VERSION); // Should be current now
         assert_eq!(migrated.len(), 1);
         assert!(migrated.get(Path::new("legacy.rs")).unwrap().is_some());
-        assert!(migrated.last_gc_mtime_nanos.is_none()); // v1->v2 migration preserves None
+        assert!(migrated.last_gc_mtime_nanos.is_none()); // migration preserves None
+        assert_eq!(migrated.gc_metrics.runs, 0);
     }
 
     #[test]

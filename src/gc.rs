@@ -1287,7 +1287,7 @@ fn clean_misc_directories(target_dir: &Path, config: &Gc, verbose: u8) -> Result
 }
 
 /// Calculate the total size of a directory
-fn calculate_directory_size(path: &Path) -> Result<u64> {
+pub(crate) fn calculate_directory_size(path: &Path) -> Result<u64> {
     if !path.exists() {
         return Ok(0);
     }

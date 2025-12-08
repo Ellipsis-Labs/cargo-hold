@@ -38,7 +38,7 @@ use crate::error::{HoldError, Result};
 use crate::gc::{self, Gc};
 use crate::hashing::{get_file_size, hash_file};
 use crate::metadata::{clean_metadata, load_metadata, save_metadata};
-use crate::state::{FileState, StateMetadata};
+use crate::state::{FileState, GcMetrics, StateMetadata};
 use crate::timestamp::{
     generate_monotonic_timestamp, restore_timestamps, saturating_duration_from_nanos,
 };
@@ -373,6 +373,7 @@ pub fn bilge(metadata_path: &Path, verbose: u8, quiet: bool) -> Result<()> {
 pub struct Heave<'a> {
     target_dir: &'a Path,
     max_target_size: Option<&'a str>,
+    auto_max_target_size: bool,
     dry_run: bool,
     debug: bool,
     preserve_cargo_binaries: &'a [String],
@@ -390,6 +391,7 @@ pub struct Heave<'a> {
 pub struct HeaveBuilder<'a> {
     target_dir: Option<&'a Path>,
     max_target_size: Option<&'a str>,
+    auto_max_target_size: bool,
     dry_run: bool,
     debug: bool,
     preserve_cargo_binaries: &'a [String],
@@ -405,6 +407,7 @@ impl<'a> HeaveBuilder<'a> {
         Self {
             target_dir: None,
             max_target_size: None,
+            auto_max_target_size: true,
             dry_run: false,
             debug: false,
             preserve_cargo_binaries: &[],
@@ -426,6 +429,12 @@ impl<'a> HeaveBuilder<'a> {
     /// Size can be specified as "5G", "500M", or in bytes.
     pub fn max_target_size(mut self, size: Option<&'a str>) -> Self {
         self.max_target_size = size;
+        self
+    }
+
+    /// Enable or disable automatic target size suggestion from previous runs.
+    pub fn auto_max_target_size(mut self, enabled: bool) -> Self {
+        self.auto_max_target_size = enabled;
         self
     }
 
@@ -477,6 +486,7 @@ impl<'a> HeaveBuilder<'a> {
         Heave {
             target_dir: self.target_dir.unwrap(),
             max_target_size: self.max_target_size,
+            auto_max_target_size: self.auto_max_target_size,
             dry_run: self.dry_run,
             debug: self.debug,
             preserve_cargo_binaries: self.preserve_cargo_binaries,
@@ -500,18 +510,38 @@ impl<'a> Heave<'a> {
         }
 
         // Parse target size if provided
-        let max_size = if let Some(size_str) = self.max_target_size {
+        let mut max_size = if let Some(size_str) = self.max_target_size {
             Some(gc::parse_size(size_str)?)
         } else {
             None
         };
 
-        // Load metadata to get the last_gc_mtime_nanos if available
-        let last_gc_mtime_nanos = if let Some(path) = self.metadata_path {
-            load_metadata(path).ok().and_then(|m| m.last_gc_mtime_nanos)
+        // Load metadata once so we can read timestamps and metrics.
+        let loaded_metadata = if let Some(path) = self.metadata_path {
+            match load_metadata(path) {
+                Ok(metadata) => Some(metadata),
+                Err(err) => {
+                    if !self.quiet {
+                        eprintln!(
+                            "Warning: failed to load metadata for GC metrics ({}). Continuing \
+                             with defaults.",
+                            err
+                        );
+                    }
+                    None
+                }
+            }
         } else {
             None
         };
+
+        // Compute current size for telemetry and as a seed for suggestions.
+        let current_size = gc::calculate_directory_size(self.target_dir)
+            .ok()
+            .filter(|size| *size > 0);
+
+        // Load metadata to get the last_gc_mtime_nanos if available
+        let last_gc_mtime_nanos = loaded_metadata.as_ref().and_then(|m| m.last_gc_mtime_nanos);
 
         if !self.quiet
             && let Some(mtime) = last_gc_mtime_nanos
@@ -524,6 +554,23 @@ impl<'a> Heave<'a> {
                     .map(|d| d.as_secs().saturating_sub(mtime_secs))
                     .unwrap_or(0)
             );
+        }
+
+        // Derive an automatic max_target_size when none was provided.
+        let mut auto_cap_used = false;
+        if max_size.is_none()
+            && self.auto_max_target_size
+            && let Some(metadata) = loaded_metadata.as_ref()
+            && let Some(suggested) = suggest_max_target_size(&metadata.gc_metrics, current_size)
+        {
+            max_size = Some(suggested);
+            auto_cap_used = true;
+            if !self.quiet {
+                eprintln!(
+                    "Auto-selected max target size: {} (based on cached GC metrics)",
+                    gc::format_size(suggested)
+                );
+            }
         }
 
         // Configure GC
@@ -562,6 +609,28 @@ impl<'a> Heave<'a> {
             }
         }
 
+        // Persist GC telemetry for future auto-sizing.
+        if let Some(path) = self.metadata_path {
+            let mut metadata = loaded_metadata.unwrap_or_else(StateMetadata::new);
+            metadata.gc_metrics.runs = metadata.gc_metrics.runs.saturating_add(1);
+            if let Some(size) = current_size {
+                metadata.gc_metrics.seed_initial_size.get_or_insert(size);
+            }
+            push_bounded(
+                &mut metadata.gc_metrics.recent_initial_sizes,
+                stats.initial_size,
+            );
+            push_bounded(
+                &mut metadata.gc_metrics.recent_bytes_freed,
+                stats.bytes_freed,
+            );
+            if auto_cap_used {
+                metadata.gc_metrics.last_suggested_cap = max_size;
+            }
+
+            save_metadata(&metadata, path)?;
+        }
+
         Ok(())
     }
 }
@@ -575,9 +644,41 @@ pub struct Voyage<'a> {
     gc_debug: bool,
     preserve_cargo_binaries: &'a [String],
     gc_age_threshold_days: u32,
+    gc_auto_max_target_size: bool,
     verbose: u8,
     working_dir: &'a Path,
     quiet: bool,
+}
+
+const GC_METRICS_WINDOW: usize = 20;
+
+fn push_bounded(vec: &mut Vec<u64>, value: u64) {
+    vec.push(value);
+    if vec.len() > GC_METRICS_WINDOW {
+        let overflow = vec.len() - GC_METRICS_WINDOW;
+        vec.drain(0..overflow);
+    }
+}
+
+fn suggest_max_target_size(metrics: &GcMetrics, seed_from_current: Option<u64>) -> Option<u64> {
+    // Use the first observed full-build size as a baseline when available.
+    let seed = metrics.seed_initial_size.or(seed_from_current)?;
+
+    let mut samples = metrics.recent_initial_sizes.clone();
+    if samples.is_empty() {
+        samples.push(seed);
+    }
+    samples.sort_unstable();
+
+    let median = samples[samples.len() / 2];
+    let p90_idx = ((samples.len().saturating_sub(1)) as f32 * 0.9).round() as usize;
+    let p90 = samples.get(p90_idx).copied().unwrap_or(median);
+
+    // Headroom factors: 1.5x baseline, 1.2x p90
+    let headroom_seed = seed.saturating_mul(3) / 2;
+    let headroom_p90 = p90.saturating_mul(12) / 10;
+
+    Some(headroom_seed.max(headroom_p90))
 }
 
 impl<'a> Voyage<'a> {
@@ -608,6 +709,7 @@ impl<'a> Voyage<'a> {
         Heave::builder()
             .target_dir(self.target_dir)
             .max_target_size(self.max_target_size)
+            .auto_max_target_size(self.gc_auto_max_target_size)
             .dry_run(self.gc_dry_run)
             .debug(self.gc_debug)
             .preserve_cargo_binaries(self.preserve_cargo_binaries)
@@ -635,6 +737,7 @@ pub struct VoyageBuilder<'a> {
     gc_debug: bool,
     preserve_cargo_binaries: &'a [String],
     gc_age_threshold_days: u32,
+    gc_auto_max_target_size: bool,
     verbose: u8,
     working_dir: Option<&'a Path>,
     quiet: bool,
@@ -650,6 +753,7 @@ impl Default for VoyageBuilder<'_> {
             gc_debug: false,
             preserve_cargo_binaries: &[],
             gc_age_threshold_days: 7, // Default to 7 days
+            gc_auto_max_target_size: true,
             verbose: 0,
             working_dir: None,
             quiet: false,
@@ -692,6 +796,12 @@ impl<'a> VoyageBuilder<'a> {
     /// Enable debug output for garbage collection.
     pub fn gc_debug(mut self, debug: bool) -> Self {
         self.gc_debug = debug;
+        self
+    }
+
+    /// Enable or disable automatic max target size suggestions.
+    pub fn gc_auto_max_target_size(mut self, enabled: bool) -> Self {
+        self.gc_auto_max_target_size = enabled;
         self
     }
 
@@ -739,6 +849,7 @@ impl<'a> VoyageBuilder<'a> {
             gc_debug: self.gc_debug,
             preserve_cargo_binaries: self.preserve_cargo_binaries,
             gc_age_threshold_days: self.gc_age_threshold_days,
+            gc_auto_max_target_size: self.gc_auto_max_target_size,
             verbose: self.verbose,
             working_dir: self.working_dir.ok_or_else(|| HoldError::ConfigError {
                 message: "working_dir is required".to_string(),
@@ -910,6 +1021,7 @@ pub fn execute_with_dir(cli: &Cli, working_dir: Option<&Path>) -> Result<()> {
         Commands::Bilge => bilge(&metadata_path, verbose, quiet),
         Commands::Heave {
             max_target_size,
+            auto_max_target_size,
             dry_run,
             debug,
             preserve_cargo_binaries,
@@ -917,6 +1029,7 @@ pub fn execute_with_dir(cli: &Cli, working_dir: Option<&Path>) -> Result<()> {
         } => Heave::builder()
             .target_dir(&target_dir)
             .max_target_size(max_target_size.as_deref())
+            .auto_max_target_size(*auto_max_target_size)
             .dry_run(*dry_run)
             .debug(*debug)
             .preserve_cargo_binaries(preserve_cargo_binaries)
@@ -932,6 +1045,7 @@ pub fn execute_with_dir(cli: &Cli, working_dir: Option<&Path>) -> Result<()> {
             gc_debug,
             preserve_cargo_binaries,
             gc_age_threshold_days,
+            gc_auto_max_target_size,
         } => Voyage::builder()
             .metadata_path(&metadata_path)
             .target_dir(&target_dir)
@@ -940,6 +1054,7 @@ pub fn execute_with_dir(cli: &Cli, working_dir: Option<&Path>) -> Result<()> {
             .gc_debug(*gc_debug)
             .preserve_cargo_binaries(preserve_cargo_binaries)
             .gc_age_threshold_days(*gc_age_threshold_days)
+            .gc_auto_max_target_size(*gc_auto_max_target_size)
             .verbose(verbose)
             .quiet(quiet)
             .working_dir(&current_dir)
@@ -1093,5 +1208,74 @@ mod tests {
             .expect("stow should keep last_gc_mtime_nanos set");
 
         assert_eq!(second_preservation, expected_nanos);
+    }
+
+    fn make_profile(target: &Path) {
+        let profile = target.join("debug");
+        fs::create_dir_all(profile.join("build")).unwrap();
+        fs::create_dir_all(profile.join("deps")).unwrap();
+        fs::create_dir_all(profile.join(".fingerprint")).unwrap();
+    }
+
+    #[test]
+    fn test_heave_auto_cap_records_metrics() {
+        let temp_dir = TempDir::new().unwrap();
+        let target_dir = temp_dir.path().join("target");
+        make_profile(&target_dir);
+        let metadata_path = temp_dir.path().join("cargo-hold.metadata");
+
+        let mut metadata = StateMetadata::new();
+        metadata.gc_metrics.seed_initial_size = Some(5 * 1024 * 1024);
+        metadata.gc_metrics.recent_initial_sizes = vec![5 * 1024 * 1024, 6 * 1024 * 1024];
+        save_metadata(&metadata, &metadata_path).unwrap();
+
+        Heave::builder()
+            .target_dir(&target_dir)
+            .max_target_size(None)
+            .auto_max_target_size(true)
+            .metadata_path(&metadata_path)
+            .age_threshold_days(7)
+            .verbose(0)
+            .quiet(true)
+            .build()
+            .heave()
+            .unwrap();
+
+        let reloaded = load_metadata(&metadata_path).unwrap();
+        let metrics = &reloaded.gc_metrics;
+        assert_eq!(metrics.runs, 1);
+        assert!(
+            metrics
+                .last_suggested_cap
+                .is_some_and(|cap| (7_800_000..=8_000_000).contains(&cap))
+        ); // ~7.5 MiB headroom
+        assert!(!metrics.recent_initial_sizes.is_empty());
+    }
+
+    #[test]
+    fn test_heave_auto_cap_can_be_disabled() {
+        let temp_dir = TempDir::new().unwrap();
+        let target_dir = temp_dir.path().join("target");
+        make_profile(&target_dir);
+        let metadata_path = temp_dir.path().join("cargo-hold.metadata");
+
+        let mut metadata = StateMetadata::new();
+        metadata.gc_metrics.seed_initial_size = Some(5 * 1024 * 1024);
+        save_metadata(&metadata, &metadata_path).unwrap();
+
+        Heave::builder()
+            .target_dir(&target_dir)
+            .max_target_size(None)
+            .auto_max_target_size(false)
+            .metadata_path(&metadata_path)
+            .age_threshold_days(7)
+            .verbose(0)
+            .quiet(true)
+            .build()
+            .heave()
+            .unwrap();
+
+        let reloaded = load_metadata(&metadata_path).unwrap();
+        assert!(reloaded.gc_metrics.last_suggested_cap.is_none());
     }
 }

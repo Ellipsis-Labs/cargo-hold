@@ -10,7 +10,7 @@ use crate::error::{HoldError, Result};
 /// This version is incremented when incompatible changes are made to the
 /// metadata format. The tool will refuse to load metadata with a version higher
 /// than this constant.
-pub const METADATA_VERSION: u32 = 2;
+pub const METADATA_VERSION: u32 = 3;
 
 /// Represents the state of a single file at a point in time.
 ///
@@ -72,6 +72,9 @@ pub struct StateMetadata {
     /// means this is either the first save or we're dealing with v1
     /// metadata that was migrated.
     pub last_gc_mtime_nanos: Option<u128>,
+
+    /// Rolling garbage-collection telemetry used to auto-tune cache sizing.
+    pub gc_metrics: GcMetrics,
 }
 
 impl StateMetadata {
@@ -81,6 +84,7 @@ impl StateMetadata {
             version: METADATA_VERSION,
             files: HashMap::new(),
             last_gc_mtime_nanos: None,
+            gc_metrics: GcMetrics::default(),
         }
     }
 
@@ -164,6 +168,22 @@ impl Default for StateMetadata {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Rolling statistics captured from `heave` runs to derive cache sizing hints.
+#[derive(Archive, Deserialize, Serialize, Debug, Clone, PartialEq, Default)]
+pub struct GcMetrics {
+    /// Total number of GC runs recorded.
+    pub runs: u32,
+    /// Size of the first full build observed; used as a baseline.
+    pub seed_initial_size: Option<u64>,
+    /// Bounded window of recent initial target directory sizes before GC
+    /// (bytes).
+    pub recent_initial_sizes: Vec<u64>,
+    /// Bounded window of recent freed byte counts (bytes).
+    pub recent_bytes_freed: Vec<u64>,
+    /// Last suggested cap (bytes) recorded by auto-sizing.
+    pub last_suggested_cap: Option<u64>,
 }
 
 #[cfg(test)]

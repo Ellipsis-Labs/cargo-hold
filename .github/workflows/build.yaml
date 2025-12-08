@@ -80,9 +80,8 @@ jobs:
       - uses: ./.github/actions/cargo-binstall
         with:
           binaries: cargo-hold
-      - run: rustup toolchain install nightly-2025-07-08 --component clippy
       - run: cargo hold voyage
-      - run: cargo +nightly-2025-07-08 clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets -- -D warnings
 
   fmt:
     runs-on: ubuntu-latest
