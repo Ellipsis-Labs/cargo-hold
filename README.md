@@ -346,7 +346,7 @@ This all-in-one command is perfect for CI pipelines that need both timestamp man
 - `--gc-dry-run`: Preview what would be cleaned without deleting (GC only)
 - `--gc-debug`: Show detailed debug output during garbage collection
 - `--preserve-cargo-binaries <NAMES>`: Additional binaries to preserve in ~/.cargo/bin
-- `--gc-auto-max-target-size`: Enable/disable auto sizing (default: enabled; can also be set false)
+- `--gc-auto-max-target-size`: Enable/disable auto sizing (default: enabled; pass `=false` to disable)
 - `--gc-age-threshold-days <DAYS>`: Age threshold for garbage collection (default: 7)
 
 **Perfect for CI because:**

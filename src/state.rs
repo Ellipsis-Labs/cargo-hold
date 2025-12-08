@@ -177,7 +177,8 @@ pub struct GcMetrics {
     pub runs: u32,
     /// Size of the first full build observed; used as a baseline.
     pub seed_initial_size: Option<u64>,
-    /// Bounded window of recent initial target sizes (bytes).
+    /// Bounded window of recent initial target directory sizes before GC
+    /// (bytes).
     pub recent_initial_sizes: Vec<u64>,
     /// Bounded window of recent freed byte counts (bytes).
     pub recent_bytes_freed: Vec<u64>,

@@ -1,11 +1,32 @@
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 
 use memmap2::Mmap;
+use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::error::{HoldError, Result};
-use crate::state::{METADATA_VERSION, StateMetadata};
+use crate::state::{FileState, GcMetrics, METADATA_VERSION, StateMetadata};
+
+/// Legacy layout for v2 metadata files (without GC metrics).
+#[derive(Archive, Deserialize, Serialize, Debug, Clone)]
+struct StateMetadataV2 {
+    pub version: u32,
+    pub files: HashMap<String, FileState>,
+    pub last_gc_mtime_nanos: Option<u128>,
+}
+
+impl From<StateMetadataV2> for StateMetadata {
+    fn from(v2: StateMetadataV2) -> Self {
+        StateMetadata {
+            version: v2.version,
+            files: v2.files,
+            last_gc_mtime_nanos: v2.last_gc_mtime_nanos,
+            gc_metrics: GcMetrics::default(),
+        }
+    }
+}
 
 /// Loads the state metadata from disk using zero-copy deserialization.
 ///
@@ -68,9 +89,22 @@ fn load_metadata_inner(metadata_path: &Path) -> Result<StateMetadata> {
         source,
     })?;
 
-    // Deserialize using rkyv
-    let metadata = rkyv::from_bytes::<StateMetadata, rkyv::rancor::BoxedError>(&mmap[..])
-        .map_err(|source| HoldError::DeserializationError { source })?;
+    // Deserialize using rkyv, with fallback to the v2 layout that didn't
+    // include GC metrics. This ensures older v2 metadata can still be loaded
+    // and migrated forward without being treated as incompatible.
+    let metadata = match rkyv::from_bytes::<StateMetadata, rkyv::rancor::BoxedError>(&mmap[..]) {
+        Ok(metadata) => metadata,
+        Err(primary_err) => {
+            match rkyv::from_bytes::<StateMetadataV2, rkyv::rancor::BoxedError>(&mmap[..]) {
+                Ok(v2) => StateMetadata::from(v2),
+                Err(_) => {
+                    return Err(HoldError::DeserializationError {
+                        source: primary_err,
+                    });
+                }
+            }
+        }
+    };
 
     // Check version compatibility
     if metadata.version > METADATA_VERSION {
@@ -205,6 +239,7 @@ pub fn clean_metadata(metadata_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use std::time::SystemTime;
 
@@ -311,10 +346,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let metadata_path = temp_dir.path().join("test.metadata");
 
-        // Simulate v2 metadata on disk.
-        let mut metadata = StateMetadata::new();
-        metadata.version = 2;
-        save_metadata(&metadata, &metadata_path).unwrap();
+        // Simulate v2 metadata on disk (without gc_metrics field).
+        let v2 = StateMetadataV2 {
+            version: 2,
+            files: HashMap::new(),
+            last_gc_mtime_nanos: None,
+        };
+        let bytes = rkyv::to_bytes::<rkyv::rancor::BoxedError>(&v2).unwrap();
+        std::fs::write(&metadata_path, bytes).unwrap();
 
         let loaded = load_metadata(&metadata_path).unwrap();
         assert_eq!(loaded.version, METADATA_VERSION);
