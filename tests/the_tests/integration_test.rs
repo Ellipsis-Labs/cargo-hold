@@ -336,6 +336,7 @@ fn test_heave_command() {
         debug: false,
         preserve_cargo_binaries: vec![],
         age_threshold_days: 7,
+        auto_max_target_size: true,
     };
 
     // Run heave command
@@ -352,6 +353,7 @@ fn test_voyage_command() {
         gc_debug: false,
         preserve_cargo_binaries: vec![],
         gc_age_threshold_days: 7,
+        gc_auto_max_target_size: true,
     };
 
     // Run voyage command (anchor + heave)
@@ -374,6 +376,7 @@ fn test_voyage_command_from_subdirectory() {
         gc_debug: false,
         preserve_cargo_binaries: vec![],
         gc_age_threshold_days: 7,
+        gc_auto_max_target_size: true,
     };
 
     execute_command_with_dir(voyage_command, &temp_dir, &subdir, 0).unwrap();
@@ -488,6 +491,7 @@ fn run_voyage(temp_dir: &TempDir, verbose: u8) -> Result<()> {
             gc_debug: false,
             preserve_cargo_binaries: vec![],
             gc_age_threshold_days: 7,
+            gc_auto_max_target_size: true,
         },
         temp_dir,
         verbose,
@@ -794,6 +798,7 @@ fn test_voyage_from_subdirectory() {
             gc_debug: false,
             preserve_cargo_binaries: vec![],
             gc_age_threshold_days: 7,
+            gc_auto_max_target_size: true,
         },
         &temp_dir,
         &subdir,
@@ -899,6 +904,7 @@ edition = "2021"
             gc_debug: false,
             preserve_cargo_binaries: vec![],
             gc_age_threshold_days: 7,
+            gc_auto_max_target_size: true,
         })
         .build()
         .expect("Failed to build Cli");
@@ -999,6 +1005,7 @@ fn test_timestamp_preservation_workflow() {
         debug: true,
         preserve_cargo_binaries: vec![],
         age_threshold_days: 30, // High so age doesn't interfere
+        auto_max_target_size: true,
     };
 
     let initial_size = get_directory_size(&target_dir);
@@ -1058,6 +1065,7 @@ fn test_heave_removes_old_artifacts_by_age() {
         debug: true,
         preserve_cargo_binaries: vec![],
         age_threshold_days: 7,
+        auto_max_target_size: true,
     };
 
     execute_command(heave_command, &temp_dir, 2).unwrap();
@@ -1123,6 +1131,7 @@ fn test_heave_preserves_recent_artifact_after_delayed_stow() {
         debug: true,
         preserve_cargo_binaries: vec![],
         age_threshold_days: 30,
+        auto_max_target_size: true,
     };
 
     // If preservation metadata jumps to `now`, this artifact is considered old and
@@ -1171,6 +1180,7 @@ fn test_heave_with_preservation_message() {
         debug: true,
         preserve_cargo_binaries: vec![],
         age_threshold_days: 0, // Remove everything old
+        auto_max_target_size: true,
     };
 
     // Execute with verbose output to see the preservation message
