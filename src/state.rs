@@ -171,7 +171,7 @@ impl Default for StateMetadata {
 }
 
 /// Rolling statistics captured from `heave` runs to derive cache sizing hints.
-#[derive(Archive, Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[derive(Archive, Deserialize, Serialize, Debug, Clone, PartialEq, Default)]
 pub struct GcMetrics {
     /// Total number of GC runs recorded.
     pub runs: u32,
@@ -183,18 +183,6 @@ pub struct GcMetrics {
     pub recent_bytes_freed: Vec<u64>,
     /// Last suggested cap (bytes) recorded by auto-sizing.
     pub last_suggested_cap: Option<u64>,
-}
-
-impl Default for GcMetrics {
-    fn default() -> Self {
-        Self {
-            runs: 0,
-            seed_initial_size: None,
-            recent_initial_sizes: Vec::new(),
-            recent_bytes_freed: Vec::new(),
-            last_suggested_cap: None,
-        }
-    }
 }
 
 #[cfg(test)]

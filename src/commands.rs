@@ -558,18 +558,18 @@ impl<'a> Heave<'a> {
 
         // Derive an automatic max_target_size when none was provided.
         let mut auto_cap_used = false;
-        if max_size.is_none() && self.auto_max_target_size {
-            if let Some(metadata) = loaded_metadata.as_ref()
-                && let Some(suggested) = suggest_max_target_size(&metadata.gc_metrics, current_size)
-            {
-                max_size = Some(suggested);
-                auto_cap_used = true;
-                if !self.quiet {
-                    eprintln!(
-                        "Auto-selected max target size: {} (based on cached GC metrics)",
-                        gc::format_size(suggested)
-                    );
-                }
+        if max_size.is_none()
+            && self.auto_max_target_size
+            && let Some(metadata) = loaded_metadata.as_ref()
+            && let Some(suggested) = suggest_max_target_size(&metadata.gc_metrics, current_size)
+        {
+            max_size = Some(suggested);
+            auto_cap_used = true;
+            if !self.quiet {
+                eprintln!(
+                    "Auto-selected max target size: {} (based on cached GC metrics)",
+                    gc::format_size(suggested)
+                );
             }
         }
 
@@ -1247,7 +1247,7 @@ mod tests {
         assert!(
             metrics
                 .last_suggested_cap
-                .is_some_and(|cap| cap >= 7_800_000 && cap <= 8_000_000)
+                .is_some_and(|cap| (7_800_000..=8_000_000).contains(&cap))
         ); // ~7.5 MiB headroom
         assert!(!metrics.recent_initial_sizes.is_empty());
     }
