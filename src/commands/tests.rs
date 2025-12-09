@@ -163,6 +163,7 @@ fn test_heave_auto_cap_records_metrics() {
     let mut metadata = StateMetadata::new();
     metadata.gc_metrics.seed_initial_size = Some(5 * 1024 * 1024);
     metadata.gc_metrics.recent_initial_sizes = vec![5 * 1024 * 1024, 6 * 1024 * 1024];
+    metadata.gc_metrics.recent_bytes_freed = vec![0, 0];
     save_metadata(&metadata, &metadata_path).unwrap();
 
     Heave::builder()
@@ -183,8 +184,8 @@ fn test_heave_auto_cap_records_metrics() {
     assert!(
         metrics
             .last_suggested_cap
-            .is_some_and(|cap| cap == 10 * 1024 * 1024)
-    ); // capped at 2x baseline (5 MiB -> 10 MiB)
+            .is_some_and(|cap| cap == 12 * 1024 * 1024)
+    ); // capped at 2x max final (6 MiB -> 12 MiB)
     assert!(!metrics.recent_initial_sizes.is_empty());
 }
 

@@ -186,54 +186,33 @@ impl<'a> Heave<'a> {
             auto_cap_used = true;
             if let Some(metadata) = loaded_metadata.as_ref() {
                 let metrics = &metadata.gc_metrics;
-                let seed = metrics.seed_initial_size.or(current_size).unwrap_or(0);
-                let mut finals: Vec<u64> = metrics
-                    .recent_initial_sizes
-                    .iter()
-                    .zip(&metrics.recent_bytes_freed)
-                    .map(|(i, f)| i.saturating_sub(*f))
-                    .collect();
-                if finals.is_empty() {
-                    finals.push(seed);
-                }
-                let mut finals_sorted = finals.clone();
-                finals_sorted.sort_unstable();
-                let baseline = percentile(&finals_sorted, 50);
+                if let Some(seed) = metrics.seed_initial_size.or(current_size) {
+                    let finals = finals_from_metrics(metrics, seed);
+                    let baseline = baseline_from_finals(&finals);
+                    let growths = growths_from_metrics(metrics, &finals, seed);
+                    let growth_budget = growth_budget_from_growths(&growths);
 
-                let mut growths: Vec<u64> =
-                    Vec::with_capacity(metrics.recent_initial_sizes.len().saturating_sub(1));
-                for i in 1..metrics.recent_initial_sizes.len() {
-                    let prev_final = finals.get(i - 1).copied().unwrap_or(seed);
-                    let init = metrics.recent_initial_sizes[i];
-                    growths.push(init.saturating_sub(prev_final));
-                }
-                let growth_budget = if growths.is_empty() {
-                    MIN_HEADROOM_BYTES
-                } else {
-                    let mut g = growths.clone();
-                    g.sort_unstable();
-                    percentile(&g, 90).max(MIN_HEADROOM_BYTES)
-                };
-
-                let clamp_reason = if let Some(prev_cap) = metrics.last_suggested_cap {
-                    if suggested
-                        > prev_cap + prev_cap.saturating_mul(MAX_GROWTH_FACTOR_PER_RUN_PCT) / 100
-                    {
-                        "clamped:+growth"
-                    } else if suggested
-                        < prev_cap.saturating_sub(
-                            prev_cap.saturating_mul(MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100,
-                        )
-                    {
-                        "clamped:-shrink"
+                    let clamp_reason = if let Some(prev_cap) = metrics.last_suggested_cap {
+                        if suggested
+                            > prev_cap
+                                + prev_cap.saturating_mul(MAX_GROWTH_FACTOR_PER_RUN_PCT) / 100
+                        {
+                            "clamped:+growth"
+                        } else if suggested
+                            < prev_cap.saturating_sub(
+                                prev_cap.saturating_mul(MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100,
+                            )
+                        {
+                            "clamped:-shrink"
+                        } else {
+                            "within-window"
+                        }
                     } else {
-                        "within-window"
-                    }
-                } else {
-                    "cold-start"
-                };
+                        "cold-start"
+                    };
 
-                cap_basis = Some((baseline, growth_budget, clamp_reason));
+                    cap_basis = Some((baseline, growth_budget, clamp_reason));
+                }
             }
             if !self.quiet {
                 eprintln!(
@@ -331,38 +310,10 @@ pub(crate) fn suggest_max_target_size(
 ) -> Option<u64> {
     let seed = metrics.seed_initial_size.or(seed_from_current)?;
 
-    let len = metrics
-        .recent_initial_sizes
-        .len()
-        .min(metrics.recent_bytes_freed.len());
-
-    let mut finals: Vec<u64> = (0..len)
-        .map(|i| metrics.recent_initial_sizes[i].saturating_sub(metrics.recent_bytes_freed[i]))
-        .collect();
-
-    if finals.is_empty() {
-        finals.push(seed);
-    }
-
-    let mut growths: Vec<u64> = Vec::with_capacity(len.saturating_sub(1));
-    for i in 1..len {
-        let prev_final = finals[i - 1];
-        let init = metrics.recent_initial_sizes[i];
-        growths.push(init.saturating_sub(prev_final));
-    }
-
-    let mut finals_sorted = finals.clone();
-    finals_sorted.sort_unstable();
-    let baseline = percentile(&finals_sorted, 50);
-
-    let growth_budget = if growths.is_empty() {
-        MIN_HEADROOM_BYTES
-    } else {
-        let mut g = growths.clone();
-        g.sort_unstable();
-        let p90_growth = percentile(&g, 90);
-        p90_growth.max(MIN_HEADROOM_BYTES)
-    };
+    let finals = finals_from_metrics(metrics, seed);
+    let growths = growths_from_metrics(metrics, &finals, seed);
+    let baseline = baseline_from_finals(&finals);
+    let growth_budget = growth_budget_from_growths(&growths);
 
     let mut proposed = baseline.saturating_add(growth_budget);
 
@@ -393,4 +344,50 @@ pub(crate) fn percentile(sorted: &[u64], p: u32) -> u64 {
 
     let idx = (((sorted.len() - 1) as u128 * p as u128 + 50) / 100) as usize;
     sorted.get(idx).copied().unwrap_or(*sorted.last().unwrap())
+}
+
+fn finals_from_metrics(metrics: &GcMetrics, seed: u64) -> Vec<u64> {
+    let len = metrics
+        .recent_initial_sizes
+        .len()
+        .min(metrics.recent_bytes_freed.len());
+
+    let mut finals: Vec<u64> = (0..len)
+        .map(|i| metrics.recent_initial_sizes[i].saturating_sub(metrics.recent_bytes_freed[i]))
+        .collect();
+
+    if finals.is_empty() {
+        finals.push(seed);
+    }
+
+    finals
+}
+
+fn growths_from_metrics(metrics: &GcMetrics, finals: &[u64], seed: u64) -> Vec<u64> {
+    let len = finals.len().min(metrics.recent_initial_sizes.len());
+
+    let mut growths: Vec<u64> = Vec::with_capacity(len.saturating_sub(1));
+    for i in 1..len {
+        let prev_final = finals.get(i - 1).copied().unwrap_or(seed);
+        let init = metrics.recent_initial_sizes[i];
+        growths.push(init.saturating_sub(prev_final));
+    }
+
+    growths
+}
+
+fn baseline_from_finals(finals: &[u64]) -> u64 {
+    let mut finals_sorted = finals.to_vec();
+    finals_sorted.sort_unstable();
+    percentile(&finals_sorted, 50)
+}
+
+fn growth_budget_from_growths(growths: &[u64]) -> u64 {
+    if growths.is_empty() {
+        MIN_HEADROOM_BYTES
+    } else {
+        let mut g = growths.to_vec();
+        g.sort_unstable();
+        percentile(&g, 90).max(MIN_HEADROOM_BYTES)
+    }
 }
