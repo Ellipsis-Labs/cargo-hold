@@ -201,11 +201,6 @@ impl<'a> Heave<'a> {
                         trace.observed_growth_pct,
                         trace.clamp_reason
                     );
-                } else {
-                    eprintln!(
-                        "Auto-selected max target size: {} (based on cached GC metrics)",
-                        gc::format_size(suggested)
-                    );
                 }
             }
         }
@@ -295,6 +290,7 @@ pub(crate) fn suggest_max_target_size(
 
     let finals = finals_from_metrics(metrics, seed);
     let growths = growths_from_metrics(metrics, &finals, seed);
+    let final_growths = positive_final_growths(&finals);
     let baseline = baseline_from_finals(&finals);
     let has_prev_cap = metrics.last_suggested_cap.is_some();
     let growth_budget = growth_budget_from_growths(&growths, has_prev_cap);
@@ -306,12 +302,6 @@ pub(crate) fn suggest_max_target_size(
     if let Some(prev_cap) = metrics.last_suggested_cap {
         // If observed growth (based on finals) is within a deadband, hold the cap
         // steady.
-        let mut final_growths: Vec<u64> = finals
-            .windows(2)
-            .filter_map(|w| w.get(1).zip(w.first()).map(|(b, a)| b.saturating_sub(*a)))
-            .filter(|g| *g > 0)
-            .collect();
-        final_growths.sort_unstable();
         let observed_p90 = percentile(&final_growths, 90);
         let growth_pct = if baseline == 0 {
             0
@@ -364,16 +354,10 @@ pub(crate) fn suggest_max_target_size(
         clamp_reason = "hard-ceiling".to_string();
     }
 
-    let observed_growth_pct = if finals.len() > 1 {
-        let mut final_growths: Vec<u64> = finals
-            .windows(2)
-            .filter_map(|w| w.get(1).zip(w.first()).map(|(b, a)| b.saturating_sub(*a)))
-            .filter(|g| *g > 0)
-            .collect();
-        final_growths.sort_unstable();
-        percentile(&final_growths, 90).saturating_mul(100) / baseline.max(1)
-    } else {
+    let observed_growth_pct = if baseline == 0 {
         0
+    } else {
+        percentile(&final_growths, 90).saturating_mul(100) / baseline.max(1)
     };
 
     Some((
@@ -454,4 +438,15 @@ fn growth_budget_from_growths(growths: &[u64], has_prev_cap: bool) -> u64 {
     } else {
         p90.max(MIN_HEADROOM_BYTES)
     }
+}
+
+fn positive_final_growths(finals: &[u64]) -> Vec<u64> {
+    let mut growths: Vec<u64> = finals
+        .windows(2)
+        .filter_map(|w| w.get(1).zip(w.first()).map(|(b, a)| b.saturating_sub(*a)))
+        .filter(|g| *g > 0)
+        .collect();
+
+    growths.sort_unstable();
+    growths
 }

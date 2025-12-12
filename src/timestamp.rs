@@ -116,17 +116,11 @@ pub fn set_file_mtime(path: &Path, mtime: SystemTime) -> Result<()> {
     let file = OpenOptions::new()
         .write(true)
         .open(path)
-        .map_err(|source| HoldError::SetTimestampError {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| HoldError::SetTimestampError(path.to_path_buf(), source))?;
 
     // Set the modification time
     file.set_modified(mtime)
-        .map_err(|source| HoldError::SetTimestampError {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| HoldError::SetTimestampError(path.to_path_buf(), source))?;
 
     Ok(())
 }

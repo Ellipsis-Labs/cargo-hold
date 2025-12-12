@@ -1,4 +1,3 @@
-#![allow(unused_assignments, unused_variables)]
 //! Error types for cargo-hold.
 //!
 //! This module defines all error types used throughout cargo-hold, using
@@ -140,18 +139,18 @@ pub enum HoldError {
     /// Occurs during the salvage operation when cargo-hold cannot
     /// open a file for writing or call `set_modified()`. Common causes
     /// are insufficient permissions or file system restrictions.
-    #[error("Failed to set file modification time for '{path}'")]
+    #[error("Failed to set file modification time for '{0}'")]
     #[diagnostic(
         code(cargo_hold::timestamp::set_error),
         help("Ensure you have write permissions for the file.")
     )]
-    SetTimestampError {
+    SetTimestampError(
         /// The file whose timestamp couldn't be set
-        path: PathBuf,
+        PathBuf,
         /// The underlying I/O error
         #[source]
-        source: std::io::Error,
-    },
+        std::io::Error,
+    ),
 
     /// Failed to create parent directory for metadata file.
     ///
