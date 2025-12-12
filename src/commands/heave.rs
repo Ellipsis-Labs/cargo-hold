@@ -188,20 +188,20 @@ impl<'a> Heave<'a> {
             max_size = Some(suggested);
             auto_cap_used = true;
             cap_trace = Some(trace.clone());
-            if !self.quiet {
-                if let Some(trace) = cap_trace.as_ref() {
-                    // Always log a concise summary (even without verbose) so CI logs show why the
-                    // cap moved.
-                    eprintln!(
-                        "Auto-selected max target size: {} (baseline {}, headroom {}, growth p90 \
-                         {}%, clamp {})",
-                        gc::format_size(suggested),
-                        gc::format_size(trace.baseline),
-                        gc::format_size(trace.growth_budget),
-                        trace.observed_growth_pct,
-                        trace.clamp_reason
-                    );
-                }
+            if !self.quiet
+                && let Some(trace) = cap_trace.as_ref()
+            {
+                // Always log a concise summary (even without verbose) so CI logs show why the
+                // cap moved.
+                eprintln!(
+                    "Auto-selected max target size: {} (baseline {}, headroom {}, growth p90 {}%, \
+                     clamp {})",
+                    gc::format_size(suggested),
+                    gc::format_size(trace.baseline),
+                    gc::format_size(trace.growth_budget),
+                    trace.observed_growth_pct,
+                    trace.clamp_reason
+                );
             }
         }
 
