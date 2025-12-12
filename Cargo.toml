@@ -14,7 +14,7 @@ name = "cargo-hold"
 readme = "README.md"
 repository = "https://github.com/Ellipsis-Labs/cargo-hold"
 rust-version = "1.88.0"
-version = "1.2.2"
+version = "1.2.3"
 
 [[bin]]
 name = "cargo-hold"
