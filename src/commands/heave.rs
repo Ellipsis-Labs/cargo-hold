@@ -5,12 +5,14 @@ use std::path::Path;
 use crate::error::Result;
 use crate::gc::{self, Gc};
 use crate::metadata::{load_metadata, save_metadata};
-use crate::state::{GcMetrics, StateMetadata};
+use crate::state::{CapTrace, GcMetrics, StateMetadata};
 
 pub(crate) const GC_METRICS_WINDOW: usize = 20;
 pub(crate) const MIN_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB safety cushion
+pub(crate) const MIN_STEADY_HEADROOM_BYTES: u64 = 256 * 1024 * 1024; // 256 MiB cushion once a cap exists
 pub(crate) const MAX_GROWTH_FACTOR_PER_RUN_PCT: u64 = 10; // limit upward drift to +10% per run
 pub(crate) const MAX_SHRINK_FACTOR_PER_RUN_PCT: u64 = 10; // limit downward drift to -10% per run
+pub(crate) const GROWTH_DEADBAND_PCT: u64 = 5; // tolerate small oscillations without moving the cap
 
 pub struct Heave<'a> {
     target_dir: &'a Path,
@@ -176,57 +178,33 @@ impl<'a> Heave<'a> {
         }
 
         let mut auto_cap_used = false;
-        let mut cap_basis: Option<(u64, u64, &'static str)> = None; // (baseline, growth, clamp_reason)
+        let mut cap_trace: Option<CapTrace> = None;
         if max_size.is_none()
             && self.auto_max_target_size
             && let Some(metadata) = loaded_metadata.as_ref()
-            && let Some(suggested) = suggest_max_target_size(&metadata.gc_metrics, current_size)
+            && let Some((suggested, trace)) =
+                suggest_max_target_size(&metadata.gc_metrics, current_size)
         {
             max_size = Some(suggested);
             auto_cap_used = true;
-            if let Some(metadata) = loaded_metadata.as_ref() {
-                let metrics = &metadata.gc_metrics;
-                if let Some(seed) = metrics.seed_initial_size.or(current_size) {
-                    let finals = finals_from_metrics(metrics, seed);
-                    let baseline = baseline_from_finals(&finals);
-                    let growths = growths_from_metrics(metrics, &finals, seed);
-                    let growth_budget = growth_budget_from_growths(&growths);
-
-                    let clamp_reason = if let Some(prev_cap) = metrics.last_suggested_cap {
-                        if suggested
-                            > prev_cap
-                                + prev_cap.saturating_mul(MAX_GROWTH_FACTOR_PER_RUN_PCT) / 100
-                        {
-                            "clamped:+growth"
-                        } else if suggested
-                            < prev_cap.saturating_sub(
-                                prev_cap.saturating_mul(MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100,
-                            )
-                        {
-                            "clamped:-shrink"
-                        } else {
-                            "within-window"
-                        }
-                    } else {
-                        "cold-start"
-                    };
-
-                    cap_basis = Some((baseline, growth_budget, clamp_reason));
-                }
-            }
+            cap_trace = Some(trace.clone());
             if !self.quiet {
-                eprintln!(
-                    "Auto-selected max target size: {} (based on cached GC metrics)",
-                    gc::format_size(suggested)
-                );
-                if self.verbose > 0
-                    && let Some((baseline, growth, clamp)) = cap_basis
-                {
+                if let Some(trace) = cap_trace.as_ref() {
+                    // Always log a concise summary (even without verbose) so CI logs show why the
+                    // cap moved.
                     eprintln!(
-                        "  baseline: {}, growth budget: {}, clamp: {}",
-                        gc::format_size(baseline),
-                        gc::format_size(growth),
-                        clamp
+                        "Auto-selected max target size: {} (baseline {}, headroom {}, growth p90 \
+                         {}%, clamp {})",
+                        gc::format_size(suggested),
+                        gc::format_size(trace.baseline),
+                        gc::format_size(trace.growth_budget),
+                        trace.observed_growth_pct,
+                        trace.clamp_reason
+                    );
+                } else {
+                    eprintln!(
+                        "Auto-selected max target size: {} (based on cached GC metrics)",
+                        gc::format_size(suggested)
                     );
                 }
             }
@@ -285,8 +263,13 @@ impl<'a> Heave<'a> {
                 &mut metadata.gc_metrics.recent_bytes_freed,
                 stats.bytes_freed,
             );
+            push_bounded(
+                &mut metadata.gc_metrics.recent_final_sizes,
+                stats.final_size,
+            );
             if auto_cap_used {
                 metadata.gc_metrics.last_suggested_cap = max_size;
+                metadata.gc_metrics.last_cap_trace = cap_trace.clone();
             }
 
             save_metadata(&metadata, path)?;
@@ -307,34 +290,101 @@ pub(crate) fn push_bounded(vec: &mut Vec<u64>, value: u64) {
 pub(crate) fn suggest_max_target_size(
     metrics: &GcMetrics,
     seed_from_current: Option<u64>,
-) -> Option<u64> {
+) -> Option<(u64, CapTrace)> {
     let seed = metrics.seed_initial_size.or(seed_from_current)?;
 
     let finals = finals_from_metrics(metrics, seed);
     let growths = growths_from_metrics(metrics, &finals, seed);
     let baseline = baseline_from_finals(&finals);
-    let growth_budget = growth_budget_from_growths(&growths);
+    let has_prev_cap = metrics.last_suggested_cap.is_some();
+    let growth_budget = growth_budget_from_growths(&growths, has_prev_cap);
 
     let mut proposed = baseline.saturating_add(growth_budget);
 
+    let mut clamp_reason = "none".to_string();
+
     if let Some(prev_cap) = metrics.last_suggested_cap {
+        // If observed growth (based on finals) is within a deadband, hold the cap
+        // steady.
+        let mut final_growths: Vec<u64> = finals
+            .windows(2)
+            .filter_map(|w| w.get(1).zip(w.first()).map(|(b, a)| b.saturating_sub(*a)))
+            .filter(|g| *g > 0)
+            .collect();
+        final_growths.sort_unstable();
+        let observed_p90 = percentile(&final_growths, 90);
+        let growth_pct = if baseline == 0 {
+            0
+        } else {
+            observed_p90.saturating_mul(100) / baseline
+        };
+
+        if observed_p90 == 0 {
+            // No observed positive growth; hold steady when baseline is at/above the cap,
+            // otherwise allow the shrink clamp to apply.
+            if baseline >= prev_cap {
+                proposed = prev_cap;
+                clamp_reason = "deadband/hold".to_string();
+            }
+        } else if growth_pct <= GROWTH_DEADBAND_PCT {
+            proposed = prev_cap;
+            clamp_reason = "deadband/hold".to_string();
+        }
+
         let max_up = prev_cap + prev_cap.saturating_mul(MAX_GROWTH_FACTOR_PER_RUN_PCT) / 100;
         let max_down =
             prev_cap.saturating_sub(prev_cap.saturating_mul(MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100);
 
-        let baseline_lower = baseline.min(max_up);
+        let baseline_lower = baseline.min(max_up).min(prev_cap);
         let lower = max_down.max(baseline_lower).min(max_up);
 
-        proposed = proposed.clamp(lower, max_up);
+        let clamped = proposed.clamp(lower, max_up);
+        if clamped != proposed && clamp_reason == "none" {
+            clamp_reason = if clamped == max_up {
+                "clamped:+growth"
+            } else if clamped == max_down {
+                "clamped:-shrink"
+            } else {
+                "clamped:baseline"
+            }
+            .to_string();
+        } else if clamp_reason == "none" {
+            clamp_reason = "within-window".to_string();
+        }
+        proposed = clamped;
     } else {
         proposed = proposed.max(baseline);
+        clamp_reason = "cold-start".to_string();
     }
 
     let max_final = finals.iter().copied().max().unwrap_or(baseline);
     let hard_ceiling = max_final.saturating_mul(2);
-    proposed = proposed.min(hard_ceiling);
+    if proposed > hard_ceiling {
+        proposed = hard_ceiling;
+        clamp_reason = "hard-ceiling".to_string();
+    }
 
-    Some(proposed)
+    let observed_growth_pct = if finals.len() > 1 {
+        let mut final_growths: Vec<u64> = finals
+            .windows(2)
+            .filter_map(|w| w.get(1).zip(w.first()).map(|(b, a)| b.saturating_sub(*a)))
+            .filter(|g| *g > 0)
+            .collect();
+        final_growths.sort_unstable();
+        percentile(&final_growths, 90).saturating_mul(100) / baseline.max(1)
+    } else {
+        0
+    };
+
+    Some((
+        proposed,
+        CapTrace {
+            baseline,
+            growth_budget,
+            observed_growth_pct,
+            clamp_reason,
+        },
+    ))
 }
 
 pub(crate) fn percentile(sorted: &[u64], p: u32) -> u64 {
@@ -382,12 +432,26 @@ fn baseline_from_finals(finals: &[u64]) -> u64 {
     percentile(&finals_sorted, 50)
 }
 
-fn growth_budget_from_growths(growths: &[u64]) -> u64 {
-    if growths.is_empty() {
-        MIN_HEADROOM_BYTES
+fn growth_budget_from_growths(growths: &[u64], has_prev_cap: bool) -> u64 {
+    // Only consider positive growth when sizing headroom.
+    let mut positives: Vec<u64> = growths.iter().copied().filter(|g| *g > 0).collect();
+
+    if positives.is_empty() {
+        // Steady-state: keep a small cushion instead of re-adding the full cold-start
+        // headroom.
+        return if has_prev_cap {
+            MIN_STEADY_HEADROOM_BYTES
+        } else {
+            MIN_HEADROOM_BYTES
+        };
+    }
+
+    positives.sort_unstable();
+    let p90 = percentile(&positives, 90);
+
+    if has_prev_cap {
+        p90.max(MIN_STEADY_HEADROOM_BYTES)
     } else {
-        let mut g = growths.to_vec();
-        g.sort_unstable();
-        percentile(&g, 90).max(MIN_HEADROOM_BYTES)
+        p90.max(MIN_HEADROOM_BYTES)
     }
 }

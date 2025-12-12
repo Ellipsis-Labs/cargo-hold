@@ -10,7 +10,7 @@ use crate::error::{HoldError, Result};
 /// This version is incremented when incompatible changes are made to the
 /// metadata format. The tool will refuse to load metadata with a version higher
 /// than this constant.
-pub const METADATA_VERSION: u32 = 3;
+pub const METADATA_VERSION: u32 = 4;
 
 /// Represents the state of a single file at a point in time.
 ///
@@ -106,9 +106,7 @@ impl StateMetadata {
         let key = state
             .path
             .to_str()
-            .ok_or_else(|| HoldError::InvalidUtf8Path {
-                path: state.path.clone(),
-            })?
+            .ok_or_else(|| HoldError::InvalidUtf8Path(state.path.clone()))?
             .to_string();
         self.files.insert(key, state);
         Ok(())
@@ -121,9 +119,9 @@ impl StateMetadata {
     ///
     /// Returns an error if the path contains invalid UTF-8.
     pub fn remove(&mut self, path: &Path) -> Result<Option<FileState>> {
-        let key = path.to_str().ok_or_else(|| HoldError::InvalidUtf8Path {
-            path: path.to_path_buf(),
-        })?;
+        let key = path
+            .to_str()
+            .ok_or_else(|| HoldError::InvalidUtf8Path(path.to_path_buf()))?;
         Ok(self.files.remove(key))
     }
 
@@ -134,9 +132,9 @@ impl StateMetadata {
     ///
     /// Returns an error if the path contains invalid UTF-8.
     pub fn get(&self, path: &Path) -> Result<Option<&FileState>> {
-        let key = path.to_str().ok_or_else(|| HoldError::InvalidUtf8Path {
-            path: path.to_path_buf(),
-        })?;
+        let key = path
+            .to_str()
+            .ok_or_else(|| HoldError::InvalidUtf8Path(path.to_path_buf()))?;
         Ok(self.files.get(key))
     }
 
@@ -147,9 +145,9 @@ impl StateMetadata {
     ///
     /// Returns an error if the path contains invalid UTF-8.
     pub fn contains(&self, path: &Path) -> Result<bool> {
-        let key = path.to_str().ok_or_else(|| HoldError::InvalidUtf8Path {
-            path: path.to_path_buf(),
-        })?;
+        let key = path
+            .to_str()
+            .ok_or_else(|| HoldError::InvalidUtf8Path(path.to_path_buf()))?;
         Ok(self.files.contains_key(key))
     }
 
@@ -184,6 +182,23 @@ pub struct GcMetrics {
     pub recent_bytes_freed: Vec<u64>,
     /// Last suggested cap (bytes) recorded by auto-sizing.
     pub last_suggested_cap: Option<u64>,
+    /// Bounded window of final target directory sizes after GC (bytes).
+    pub recent_final_sizes: Vec<u64>,
+    /// Last recorded cap computation trace for observability/debugging.
+    pub last_cap_trace: Option<CapTrace>,
+}
+
+/// Diagnostic trace of the most recent auto-cap computation.
+#[derive(Archive, Deserialize, Serialize, Debug, Clone, PartialEq, Default)]
+pub struct CapTrace {
+    /// Median-ish footprint the algorithm targeted.
+    pub baseline: u64,
+    /// Growth headroom that was added.
+    pub growth_budget: u64,
+    /// Observed p90 growth percentage over recent finals.
+    pub observed_growth_pct: u64,
+    /// Why the final clamp decision was chosen.
+    pub clamp_reason: String,
 }
 
 #[cfg(test)]

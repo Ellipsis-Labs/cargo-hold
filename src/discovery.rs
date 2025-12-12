@@ -33,16 +33,13 @@ pub fn discover_tracked_files(
     repo_path: &Path,
 ) -> Result<(PathBuf, Vec<PathBuf>, usize), HoldError> {
     // Open the repository, searching upward from the given path
-    let repo = Repository::discover(repo_path).map_err(|_| HoldError::RepoNotFound {
-        path: repo_path.to_path_buf(),
-    })?;
+    let repo = Repository::discover(repo_path)
+        .map_err(|_| HoldError::RepoNotFound(repo_path.to_path_buf()))?;
 
     // Get the repository root
     let repo_root = repo
         .workdir()
-        .ok_or_else(|| HoldError::RepoNotFound {
-            path: repo_path.to_path_buf(),
-        })?
+        .ok_or_else(|| HoldError::RepoNotFound(repo_path.to_path_buf()))?
         .to_path_buf();
 
     // Access the Git index

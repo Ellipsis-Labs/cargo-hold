@@ -98,18 +98,18 @@ pub fn set_file_mtime(path: &Path, mtime: SystemTime) -> Result<()> {
 
     // Reject symlinks
     if metadata.is_symlink() {
-        return Err(HoldError::InvalidFileType {
-            path: path.to_path_buf(),
-            message: "Cannot set timestamp on symbolic links".to_string(),
-        });
+        return Err(HoldError::InvalidFileType(
+            path.to_path_buf(),
+            "Cannot set timestamp on symbolic links".to_string(),
+        ));
     }
 
     // Reject directories
     if metadata.is_dir() {
-        return Err(HoldError::InvalidFileType {
-            path: path.to_path_buf(),
-            message: "Cannot set timestamp on directories".to_string(),
-        });
+        return Err(HoldError::InvalidFileType(
+            path.to_path_buf(),
+            "Cannot set timestamp on directories".to_string(),
+        ));
     }
 
     // Open the file to get a handle

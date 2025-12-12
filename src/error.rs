@@ -1,3 +1,4 @@
+#![allow(unused_assignments, unused_variables)]
 //! Error types for cargo-hold.
 //!
 //! This module defines all error types used throughout cargo-hold, using
@@ -21,9 +22,7 @@
 //! fn check_repo(path: &Path) -> Result<()> {
 //!     // Example of returning a specific error
 //!     if !path.join(".git").exists() {
-//!         return Err(HoldError::RepoNotFound {
-//!             path: path.to_path_buf(),
-//!         });
+//!         return Err(HoldError::RepoNotFound(path.to_path_buf()));
 //!     }
 //!     Ok(())
 //! }
@@ -42,15 +41,15 @@ pub enum HoldError {
     /// Raised when `git2::Repository::discover()` fails or when the repository
     /// is bare (no working directory). cargo-hold requires a Git repository to
     /// determine which files to track for timestamp management.
-    #[error("Git repository not found in '{path}' or any parent directories")]
+    #[error("Git repository not found in '{0}' or any parent directories")]
     #[diagnostic(
         code(cargo_hold::git::repo_not_found),
         help("Ensure 'cargo hold' is run from within a Git repository.")
     )]
-    RepoNotFound {
+    RepoNotFound(
         /// The path where the Git repository was searched for
-        path: PathBuf,
-    },
+        PathBuf,
+    ),
 
     /// Failed to read the Git index to enumerate tracked files.
     ///
@@ -96,16 +95,16 @@ pub enum HoldError {
     /// Occurs when loading metadata if the file is corrupted or from
     /// an incompatible format. cargo-hold automatically attempts recovery
     /// by resetting the metadata when this error is encountered.
-    #[error("Failed to deserialize metadata")]
+    #[error("Failed to deserialize metadata: {0}")]
     #[diagnostic(
         code(cargo_hold::metadata::deserialization_error),
         help("The metadata file may be corrupted. Run 'cargo hold bilge' to reset it.")
     )]
-    DeserializationError {
+    DeserializationError(
         /// The underlying deserialization error
         #[source]
-        source: rkyv::rancor::BoxedError,
-    },
+        rkyv::rancor::BoxedError,
+    ),
 
     /// Git index path contains invalid UTF-8.
     ///
@@ -124,17 +123,17 @@ pub enum HoldError {
     /// cargo-hold only supports regular files. This error occurs when
     /// trying to hash, get size of, or set timestamps on symlinks or
     /// directories, which are explicitly unsupported.
-    #[error("Invalid file type for '{path}': {message}")]
+    #[error("Invalid file type for '{0}': {1}")]
     #[diagnostic(
         code(cargo_hold::file::invalid_type),
         help("cargo-hold only processes regular files tracked by Git.")
     )]
-    InvalidFileType {
+    InvalidFileType(
         /// The path of the invalid file
-        path: PathBuf,
+        PathBuf,
         /// Description of the file type issue
-        message: String,
-    },
+        String,
+    ),
 
     /// Failed to restore a file's modification time.
     ///
@@ -159,25 +158,25 @@ pub enum HoldError {
     /// Raised when `fs::create_dir_all()` fails while preparing to
     /// save metadata. The metadata file is typically stored at
     /// `target/cargo-hold.metadata`.
-    #[error("Failed to create metadata directory '{path}'")]
+    #[error("Failed to create metadata directory '{0}'")]
     #[diagnostic(
         code(cargo_hold::metadata::create_dir_error),
         help("Ensure you have write permissions for the parent directory.")
     )]
-    CreateMetadataDirError {
+    CreateMetadataDirError(
         /// The directory path that couldn't be created
-        path: PathBuf,
+        PathBuf,
         /// The underlying I/O error
         #[source]
-        source: std::io::Error,
-    },
+        std::io::Error,
+    ),
 
     /// Invalid size specification for --max-target-size.
     ///
     /// Raised when parsing size strings like "5G" or "500M" fails.
     /// Valid suffixes are B (bytes), K (kilobytes), M (megabytes),
     /// G (gigabytes), or T (terabytes). Numbers without suffix are bytes.
-    #[error("Invalid metadata size: '{value}' - {message}")]
+    #[error("Invalid metadata size: '{0}' - {1}")]
     #[diagnostic(
         code(cargo_hold::gc::invalid_metadata_size),
         help(
@@ -185,57 +184,57 @@ pub enum HoldError {
              or raw bytes)"
         )
     )]
-    InvalidMetadataSize {
+    InvalidMetadataSize(
         /// The invalid size value provided
-        value: String,
+        String,
         /// Description of the parsing error
-        message: String,
-    },
+        String,
+    ),
 
     /// Cannot determine home directory for cargo cache cleanup.
     ///
     /// Raised when `home::cargo_home()` returns None during garbage
     /// collection of ~/.cargo/registry or ~/.cargo/bin. The home
     /// directory is needed to locate cargo's cache directories.
-    #[error("Garbage collection error: {message}")]
+    #[error("Garbage collection error: {0}")]
     #[diagnostic(
         code(cargo_hold::gc::error),
         help("Check permissions and disk space, then try again.")
     )]
-    GcError {
+    GcError(
         /// Description of the garbage collection error
-        message: String,
-    },
+        String,
+    ),
 
     /// Metadata version is newer than supported or configuration invalid.
     ///
     /// Raised when: 1) loaded metadata has version > METADATA_VERSION,
     /// indicating it was created by a newer cargo-hold version, or
     /// 2) required parameters are missing for the voyage command.
-    #[error("Configuration error: {message}")]
+    #[error("Configuration error: {0}")]
     #[diagnostic(
         code(cargo_hold::config::error),
         help("Check the required configuration parameters.")
     )]
-    ConfigError {
+    ConfigError(
         /// Description of the configuration error
-        message: String,
-    },
+        String,
+    ),
 
     /// PathBuf cannot be converted to UTF-8 string for storage.
     ///
     /// Raised in StateMetadata operations when a PathBuf contains
     /// non-UTF-8 sequences. All paths must be valid UTF-8 for storage
     /// in the metadata format and compatibility with Git.
-    #[error("Invalid UTF-8 in path: {path}")]
+    #[error("Invalid UTF-8 in path: {0}")]
     #[diagnostic(
         code(cargo_hold::path::invalid_utf8),
         help("File paths must be valid UTF-8. This is a requirement for Git-tracked files.")
     )]
-    InvalidUtf8Path {
+    InvalidUtf8Path(
         /// The path containing invalid UTF-8
-        path: PathBuf,
-    },
+        PathBuf,
+    ),
 }
 
 /// Type alias for Results in this crate

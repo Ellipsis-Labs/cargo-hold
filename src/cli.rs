@@ -239,9 +239,9 @@ impl CliBuilder {
 
     /// Build the Cli instance
     pub fn build(self) -> Result<Cli> {
-        let command = self.command.ok_or(HoldError::ConfigError {
-            message: "Command is required".to_string(),
-        })?;
+        let command = self
+            .command
+            .ok_or(HoldError::ConfigError("Command is required".to_string()))?;
 
         Ok(Cli {
             global_opts: GlobalOpts::builder()
