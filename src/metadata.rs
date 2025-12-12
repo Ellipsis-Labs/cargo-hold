@@ -28,6 +28,43 @@ impl From<StateMetadataV2> for StateMetadata {
     }
 }
 
+/// Legacy layout for v3 metadata files (first to include GC metrics).
+#[derive(Archive, Deserialize, Serialize, Debug, Clone)]
+struct StateMetadataV3 {
+    pub version: u32,
+    pub files: HashMap<String, FileState>,
+    pub last_gc_mtime_nanos: Option<u128>,
+    pub gc_metrics: GcMetricsV3,
+}
+
+#[derive(Archive, Deserialize, Serialize, Debug, Clone, PartialEq, Default)]
+struct GcMetricsV3 {
+    pub runs: u32,
+    pub seed_initial_size: Option<u64>,
+    pub recent_initial_sizes: Vec<u64>,
+    pub recent_bytes_freed: Vec<u64>,
+    pub last_suggested_cap: Option<u64>,
+}
+
+impl From<StateMetadataV3> for StateMetadata {
+    fn from(v3: StateMetadataV3) -> Self {
+        StateMetadata {
+            version: v3.version,
+            files: v3.files,
+            last_gc_mtime_nanos: v3.last_gc_mtime_nanos,
+            gc_metrics: GcMetrics {
+                runs: v3.gc_metrics.runs,
+                seed_initial_size: v3.gc_metrics.seed_initial_size,
+                recent_initial_sizes: v3.gc_metrics.recent_initial_sizes,
+                recent_bytes_freed: v3.gc_metrics.recent_bytes_freed,
+                last_suggested_cap: v3.gc_metrics.last_suggested_cap,
+                recent_final_sizes: Vec::new(),
+                last_cap_trace: None,
+            },
+        }
+    }
+}
+
 /// Loads the state metadata from disk using zero-copy deserialization.
 ///
 /// This function uses memory-mapped I/O and rkyv for extremely fast loading.
@@ -95,12 +132,15 @@ fn load_metadata_inner(metadata_path: &Path) -> Result<StateMetadata> {
     let metadata = match rkyv::from_bytes::<StateMetadata, rkyv::rancor::BoxedError>(&mmap[..]) {
         Ok(metadata) => metadata,
         Err(primary_err) => {
-            match rkyv::from_bytes::<StateMetadataV2, rkyv::rancor::BoxedError>(&mmap[..]) {
-                Ok(v2) => StateMetadata::from(v2),
+            match rkyv::from_bytes::<StateMetadataV3, rkyv::rancor::BoxedError>(&mmap[..]) {
+                Ok(v3) => StateMetadata::from(v3),
                 Err(_) => {
-                    return Err(HoldError::DeserializationError {
-                        source: primary_err,
-                    });
+                    match rkyv::from_bytes::<StateMetadataV2, rkyv::rancor::BoxedError>(&mmap[..]) {
+                        Ok(v2) => StateMetadata::from(v2),
+                        Err(_) => {
+                            return Err(HoldError::DeserializationError(primary_err));
+                        }
+                    }
                 }
             }
         }
@@ -108,12 +148,10 @@ fn load_metadata_inner(metadata_path: &Path) -> Result<StateMetadata> {
 
     // Check version compatibility
     if metadata.version > METADATA_VERSION {
-        return Err(HoldError::ConfigError {
-            message: format!(
-                "Metadata version {} is newer than supported version {}. Please update cargo-hold.",
-                metadata.version, METADATA_VERSION
-            ),
-        });
+        return Err(HoldError::ConfigError(format!(
+            "Metadata version {} is newer than supported version {}. Please update cargo-hold.",
+            metadata.version, METADATA_VERSION
+        )));
     }
 
     // Handle migration from older versions
@@ -157,6 +195,13 @@ fn migrate_metadata(mut metadata: StateMetadata) -> Result<StateMetadata> {
         metadata.version = 3;
     }
 
+    // Migration from v3 to v4: add recent_final_sizes + last_cap_trace
+    if metadata.version == 3 {
+        metadata.gc_metrics.recent_final_sizes = Vec::new();
+        metadata.gc_metrics.last_cap_trace = None;
+        metadata.version = 4;
+    }
+
     Ok(metadata)
 }
 
@@ -178,10 +223,8 @@ fn migrate_metadata(mut metadata: StateMetadata) -> Result<StateMetadata> {
 pub fn save_metadata(metadata: &StateMetadata, metadata_path: &Path) -> Result<()> {
     // Ensure the parent directory exists - create it for save operations
     if let Some(parent) = metadata_path.parent() {
-        fs::create_dir_all(parent).map_err(|source| HoldError::CreateMetadataDirError {
-            path: parent.to_path_buf(),
-            source,
-        })?;
+        fs::create_dir_all(parent)
+            .map_err(|source| HoldError::CreateMetadataDirError(parent.to_path_buf(), source))?;
     }
 
     // Serialize to bytes using rkyv
@@ -551,7 +594,7 @@ mod tests {
         assert!(result.is_err());
 
         match result.unwrap_err() {
-            HoldError::ConfigError { message } => {
+            HoldError::ConfigError(message) => {
                 assert!(message.contains("newer than supported"));
                 assert!(message.contains(&(METADATA_VERSION + 1).to_string()));
             }

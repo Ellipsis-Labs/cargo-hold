@@ -158,12 +158,12 @@ impl<'a> VoyageBuilder<'a> {
 
     pub fn build(self) -> Result<Voyage<'a>> {
         Ok(Voyage {
-            metadata_path: self.metadata_path.ok_or_else(|| HoldError::ConfigError {
-                message: "metadata_path is required".to_string(),
-            })?,
-            target_dir: self.target_dir.ok_or_else(|| HoldError::ConfigError {
-                message: "target_dir is required".to_string(),
-            })?,
+            metadata_path: self
+                .metadata_path
+                .ok_or_else(|| HoldError::ConfigError("metadata_path is required".to_string()))?,
+            target_dir: self
+                .target_dir
+                .ok_or_else(|| HoldError::ConfigError("target_dir is required".to_string()))?,
             max_target_size: self.max_target_size,
             gc_dry_run: self.gc_dry_run,
             gc_debug: self.gc_debug,
@@ -171,9 +171,9 @@ impl<'a> VoyageBuilder<'a> {
             gc_age_threshold_days: self.gc_age_threshold_days,
             gc_auto_max_target_size: self.gc_auto_max_target_size,
             verbose: self.verbose,
-            working_dir: self.working_dir.ok_or_else(|| HoldError::ConfigError {
-                message: "working_dir is required".to_string(),
-            })?,
+            working_dir: self
+                .working_dir
+                .ok_or_else(|| HoldError::ConfigError("working_dir is required".to_string()))?,
             quiet: self.quiet,
         })
     }

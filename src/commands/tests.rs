@@ -113,7 +113,7 @@ fn test_stow_propagates_future_metadata_error() {
     save_metadata(&metadata, &metadata_path).unwrap();
 
     let err = stow(&metadata_path, 0, false, temp_dir.path()).unwrap_err();
-    assert!(matches!(err, HoldError::ConfigError { .. }));
+    assert!(matches!(err, HoldError::ConfigError(_)));
 }
 
 #[test]
@@ -223,6 +223,8 @@ fn mk_metrics(initials: &[u64], freed: &[u64], last_cap: Option<u64>) -> GcMetri
         recent_initial_sizes: initials.to_vec(),
         recent_bytes_freed: freed.to_vec(),
         last_suggested_cap: last_cap,
+        recent_final_sizes: Vec::new(),
+        last_cap_trace: None,
     }
 }
 
@@ -233,9 +235,11 @@ fn steady_usage_stays_near_baseline() {
     let freed = [2 * 1024 * 1024 * 1024]; // final = 10 GiB
     let metrics = mk_metrics(&initials, &freed, Some(12 * 1024 * 1024 * 1024));
 
-    let cap = suggest_max_target_size(&metrics, Some(initials[0])).unwrap();
-    // With 2 GiB headroom and 10% clamp, stays at 12 GiB.
-    assert_eq!(cap, 12 * 1024 * 1024 * 1024);
+    let (cap, _) = suggest_max_target_size(&metrics, Some(initials[0])).unwrap();
+    // Deadband allows shrink within clamp; 10% down from 12 GiB = 10.8 GiB.
+    let expected =
+        12 * 1024 * 1024 * 1024 - (12 * 1024 * 1024 * 1024 * MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100;
+    assert_eq!(cap, expected);
 }
 
 #[test]
@@ -250,10 +254,71 @@ fn slow_growth_advances_gradually() {
     let freed = [2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024];
     let metrics = mk_metrics(&initials, &freed, Some(12 * 1024 * 1024 * 1024));
 
-    let cap = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
+    let (cap, _) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
 
-    // Cap grows to 13 GiB (baseline 10.5 + 2.5 growth, below +10% clamp).
-    let expected = 13 * 1024 * 1024 * 1024;
+    // Growth is within deadband; cap holds steady at 12 GiB.
+    assert_eq!(cap, 12 * 1024 * 1024 * 1024);
+}
+
+#[test]
+fn flat_usage_still_ratchets_up_from_headroom_floor() {
+    let gib = 1024 * 1024 * 1024;
+    // Two runs that end right at the 10 GiB cap; no real growth.
+    let initials = [12 * gib, 12 * gib];
+    let freed = [2 * gib, 2 * gib]; // finals stay 10 GiB both times
+    let last_cap = 10 * gib;
+    let metrics = mk_metrics(&initials, &freed, Some(last_cap));
+
+    let (cap, _) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
+
+    // Deadband prevents drift; cap should stay at 10 GiB.
+    assert_eq!(cap, last_cap);
+}
+
+#[test]
+fn repeated_caps_keep_increasing_even_without_growth() {
+    let gib = 1024 * 1024 * 1024;
+    // Prior run already ratcheted to 11 GiB; usage still flat at the cap.
+    let initials = [13 * gib, 13 * gib];
+    let freed = [2 * gib, 2 * gib]; // finals stay 11 GiB
+    let last_cap = 11 * gib;
+    let metrics = mk_metrics(&initials, &freed, Some(last_cap));
+
+    let (cap, trace) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
+
+    // Deadband should keep the cap pinned at 11 GiB.
+    assert_eq!(cap, last_cap);
+    assert_eq!(trace.clamp_reason, "deadband/hold");
+}
+
+#[test]
+fn small_noise_stays_flat_with_deadband() {
+    let gib = 1024 * 1024 * 1024;
+    // Finals bounce by <1% between runs; prior cap 10 GiB.
+    let finals = [10 * gib, 10 * gib + 50 * 1024 * 1024];
+    let initials = [finals[0] + 2 * gib, finals[1] + 2 * gib];
+    let freed = [2 * gib, 2 * gib];
+    let last_cap = 10 * gib;
+    let metrics = mk_metrics(&initials, &freed, Some(last_cap));
+
+    let (cap, _) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
+
+    assert_eq!(cap, last_cap);
+}
+
+#[test]
+fn sustained_growth_moves_up_within_clamp() {
+    let gib = 1024 * 1024 * 1024;
+    // Finals grow meaningfully; cap should ratchet up but stay within +10%.
+    let finals = [12 * gib, 14 * gib];
+    let initials = [finals[0] + 2 * gib, finals[1] + 2 * gib];
+    let freed = [2 * gib, 2 * gib];
+    let last_cap = 12 * gib;
+    let metrics = mk_metrics(&initials, &freed, Some(last_cap));
+
+    let (cap, _) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
+
+    let expected = last_cap + (last_cap * MAX_GROWTH_FACTOR_PER_RUN_PCT) / 100;
     assert_eq!(cap, expected);
 }
 
@@ -264,7 +329,7 @@ fn spike_is_bounded_by_hard_ceiling() {
     let freed = [2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024]; // finals 10 GiB, 30 GiB
     let metrics = mk_metrics(&initials, &freed, Some(12 * 1024 * 1024 * 1024));
 
-    let cap = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
+    let (cap, _trace) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
 
     // Per-run clamp from 12 GiB limits growth to +10%.
     let expected =
@@ -279,7 +344,7 @@ fn shrink_moves_down_slowly_not_below_baseline() {
     let freed = [2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024]; // finals 10 GiB, 6 GiB
     let metrics = mk_metrics(&initials, &freed, Some(14 * 1024 * 1024 * 1024));
 
-    let cap = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
+    let (cap, _) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
 
     // Cap should decline by at most 10% per run, but never below baseline (6 GiB).
     let min_cap =

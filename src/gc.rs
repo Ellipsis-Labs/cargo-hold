@@ -223,9 +223,7 @@ impl Gc {
     /// Number of bytes freed
     pub fn clean_cargo_registry(&self, verbose: u8) -> Result<u64> {
         let cargo_home = home::home_dir()
-            .ok_or_else(|| HoldError::GcError {
-                message: "Could not determine home directory".to_string(),
-            })?
+            .ok_or_else(|| HoldError::GcError("Could not determine home directory".to_string()))?
             .join(".cargo");
 
         self.clean_cargo_registry_with_home(&cargo_home, verbose)
@@ -293,9 +291,7 @@ impl Gc {
     /// Number of bytes freed
     fn clean_cargo_bin(&self, verbose: u8) -> Result<u64> {
         let cargo_home = home::home_dir()
-            .ok_or_else(|| HoldError::GcError {
-                message: "Could not determine home directory".to_string(),
-            })?
+            .ok_or_else(|| HoldError::GcError("Could not determine home directory".to_string()))?
             .join(".cargo");
 
         self.clean_cargo_bin_with_home(&cargo_home, verbose)
@@ -635,19 +631,16 @@ pub fn parse_size(s: &str) -> Result<u64> {
         "G" | "GB" | "GIB" => 1024 * 1024 * 1024,
         "T" | "TB" | "TIB" => 1024_u64.pow(4),
         _ => {
-            return Err(HoldError::InvalidMetadataSize {
-                value: s.to_string(),
-                message: format!("Unknown size suffix: {suffix}"),
-            });
+            return Err(HoldError::InvalidMetadataSize(
+                s.to_string(),
+                format!("Unknown size suffix: {suffix}"),
+            ));
         }
     };
 
-    let base: f64 = num_part
-        .parse()
-        .map_err(|_| HoldError::InvalidMetadataSize {
-            value: s.to_string(),
-            message: "Invalid number format".to_string(),
-        })?;
+    let base: f64 = num_part.parse().map_err(|_| {
+        HoldError::InvalidMetadataSize(s.to_string(), "Invalid number format".to_string())
+    })?;
 
     Ok((base * multiplier as f64) as u64)
 }
@@ -664,10 +657,10 @@ fn split_number_suffix(s: &str) -> Result<(&str, &str)> {
 
     let (num, suffix) = s.split_at(split_pos);
     if num.is_empty() {
-        return Err(HoldError::InvalidMetadataSize {
-            value: s.to_string(),
-            message: "No number found".to_string(),
-        });
+        return Err(HoldError::InvalidMetadataSize(
+            s.to_string(),
+            "No number found".to_string(),
+        ));
     }
 
     Ok((num, suffix))

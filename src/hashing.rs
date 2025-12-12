@@ -36,18 +36,18 @@ pub fn hash_file(path: &Path) -> Result<String, HoldError> {
 
     // Reject symlinks
     if metadata.is_symlink() {
-        return Err(HoldError::InvalidFileType {
-            path: path.to_path_buf(),
-            message: "Symbolic links are not supported".to_string(),
-        });
+        return Err(HoldError::InvalidFileType(
+            path.to_path_buf(),
+            "Symbolic links are not supported".to_string(),
+        ));
     }
 
     // Reject directories
     if metadata.is_dir() {
-        return Err(HoldError::InvalidFileType {
-            path: path.to_path_buf(),
-            message: "Directories are not supported".to_string(),
-        });
+        return Err(HoldError::InvalidFileType(
+            path.to_path_buf(),
+            "Directories are not supported".to_string(),
+        ));
     }
 
     // Handle empty files without memory mapping
@@ -101,18 +101,18 @@ pub fn get_file_size(path: &Path) -> Result<u64, HoldError> {
 
     // Reject symlinks
     if metadata.is_symlink() {
-        return Err(HoldError::InvalidFileType {
-            path: path.to_path_buf(),
-            message: "Symbolic links are not supported".to_string(),
-        });
+        return Err(HoldError::InvalidFileType(
+            path.to_path_buf(),
+            "Symbolic links are not supported".to_string(),
+        ));
     }
 
     // Reject directories
     if metadata.is_dir() {
-        return Err(HoldError::InvalidFileType {
-            path: path.to_path_buf(),
-            message: "Directories are not supported".to_string(),
-        });
+        return Err(HoldError::InvalidFileType(
+            path.to_path_buf(),
+            "Directories are not supported".to_string(),
+        ));
     }
 
     Ok(metadata.len())
