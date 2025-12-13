@@ -381,14 +381,18 @@ pub(crate) fn percentile(sorted: &[u64], p: u32) -> u64 {
 }
 
 fn finals_from_metrics(metrics: &GcMetrics, seed: u64) -> Vec<u64> {
-    let len = metrics
-        .recent_initial_sizes
-        .len()
-        .min(metrics.recent_bytes_freed.len());
+    let mut finals: Vec<u64> = if !metrics.recent_final_sizes.is_empty() {
+        metrics.recent_final_sizes.clone()
+    } else {
+        let len = metrics
+            .recent_initial_sizes
+            .len()
+            .min(metrics.recent_bytes_freed.len());
 
-    let mut finals: Vec<u64> = (0..len)
-        .map(|i| metrics.recent_initial_sizes[i].saturating_sub(metrics.recent_bytes_freed[i]))
-        .collect();
+        (0..len)
+            .map(|i| metrics.recent_initial_sizes[i].saturating_sub(metrics.recent_bytes_freed[i]))
+            .collect()
+    };
 
     if finals.is_empty() {
         finals.push(seed);

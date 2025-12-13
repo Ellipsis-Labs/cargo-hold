@@ -228,6 +228,23 @@ fn mk_metrics(initials: &[u64], freed: &[u64], last_cap: Option<u64>) -> GcMetri
     }
 }
 
+fn mk_metrics_with_finals(
+    initials: &[u64],
+    freed: &[u64],
+    finals: &[u64],
+    last_cap: Option<u64>,
+) -> GcMetrics {
+    GcMetrics {
+        runs: initials.len() as u32,
+        seed_initial_size: initials.first().copied(),
+        recent_initial_sizes: initials.to_vec(),
+        recent_bytes_freed: freed.to_vec(),
+        last_suggested_cap: last_cap,
+        recent_final_sizes: finals.to_vec(),
+        last_cap_trace: None,
+    }
+}
+
 #[test]
 fn steady_usage_stays_near_baseline() {
     // Stable finals ~10 GiB, prior cap 12 GiB.
@@ -287,6 +304,23 @@ fn repeated_caps_keep_increasing_even_without_growth() {
     let (cap, trace) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
 
     // Deadband should keep the cap pinned at 11 GiB.
+    assert_eq!(cap, last_cap);
+    assert_eq!(trace.clamp_reason, "deadband/hold");
+}
+
+#[test]
+fn non_target_cleanup_does_not_inflate_growth() {
+    let gib = 1024 * 1024 * 1024;
+    // Target sits steady at 10 GiB, but a noisy registry cleanup reports 5 GiB
+    // freed.
+    let finals = [10 * gib, 10 * gib];
+    let initials = [10 * gib, 10 * gib];
+    let freed = [5 * gib, 0];
+    let last_cap = 10 * gib;
+    let metrics = mk_metrics_with_finals(&initials, &freed, &finals, Some(last_cap));
+
+    let (cap, trace) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
+
     assert_eq!(cap, last_cap);
     assert_eq!(trace.clamp_reason, "deadband/hold");
 }

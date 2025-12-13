@@ -1553,4 +1553,69 @@ mod tests {
         assert_eq!(to_remove.len(), 1);
         assert_eq!(to_remove[0].name, "older-build");
     }
+
+    #[test]
+    fn test_size_cleanup_after_previous_build_expires() {
+        let now = SystemTime::now();
+        let fresh = now - Duration::from_secs(60);
+
+        let artifacts = vec![
+            CrateArtifact {
+                name: "fresh-a".to_string(),
+                hash: "aaaaaaaaaaaaaaaa".to_string(),
+                artifacts: vec![],
+                total_size: 3 * 1024 * 1024,
+                newest_mtime: fresh,
+            },
+            CrateArtifact {
+                name: "fresh-b".to_string(),
+                hash: "bbbbbbbbbbbbbbbb".to_string(),
+                artifacts: vec![],
+                total_size: 3 * 1024 * 1024,
+                newest_mtime: fresh,
+            },
+        ];
+
+        let current_size = 6 * 1024 * 1024;
+        let cap = 4 * 1024 * 1024;
+        let age_threshold_days = 1;
+
+        // Preservation active: nothing should be evicted even though we're over cap.
+        let previous_build_nanos = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let preserved = select_artifacts_for_removal(
+            &artifacts,
+            current_size,
+            Some(cap),
+            age_threshold_days,
+            Some(previous_build_nanos),
+            0,
+            false,
+        );
+        assert!(preserved.is_empty());
+
+        // Simulate the previous build timestamp aging out of the preservation window.
+        let stale_previous = now - Duration::from_secs(2 * 24 * 60 * 60);
+        let stale_previous_nanos = stale_previous
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+
+        let evicted = select_artifacts_for_removal(
+            &artifacts,
+            current_size,
+            Some(cap),
+            age_threshold_days,
+            Some(stale_previous_nanos),
+            0,
+            false,
+        );
+
+        // With preservation skipped, size-based cleanup should evict to meet the cap.
+        assert!(!evicted.is_empty());
+        let freed: u64 = evicted.iter().map(|a| a.total_size).sum();
+        assert!(freed >= current_size - cap);
+    }
 }
