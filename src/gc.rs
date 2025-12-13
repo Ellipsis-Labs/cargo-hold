@@ -1577,7 +1577,7 @@ mod tests {
         ];
 
         let current_size = 6 * 1024 * 1024;
-        let cap = Some(4 * 1024 * 1024);
+        let cap = 4 * 1024 * 1024;
         let age_threshold_days = 1;
 
         // Preservation active: nothing should be evicted even though we're over cap.
@@ -1588,7 +1588,7 @@ mod tests {
         let preserved = select_artifacts_for_removal(
             &artifacts,
             current_size,
-            cap,
+            Some(cap),
             age_threshold_days,
             Some(previous_build_nanos),
             0,
@@ -1606,7 +1606,7 @@ mod tests {
         let evicted = select_artifacts_for_removal(
             &artifacts,
             current_size,
-            cap,
+            Some(cap),
             age_threshold_days,
             Some(stale_previous_nanos),
             0,
@@ -1616,6 +1616,6 @@ mod tests {
         // With preservation skipped, size-based cleanup should evict to meet the cap.
         assert!(!evicted.is_empty());
         let freed: u64 = evicted.iter().map(|a| a.total_size).sum();
-        assert!(freed >= current_size - cap.unwrap());
+        assert!(freed >= current_size - cap);
     }
 }
