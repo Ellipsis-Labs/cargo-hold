@@ -28,7 +28,7 @@ jobs:
           - { arch: aarch64-darwin, runner: macos-latest }
           - { arch: x86_64-darwin, runner: macos-latest }
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Configure R2 credentials
         uses: ./.github/actions/setup-r2-credentials
@@ -104,7 +104,7 @@ jobs:
           fi
 
       - name: Upload artifacts from cross-build
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: cargo-hold-${{ matrix.target.arch }}
           path: target/${{ steps.rust-target.outputs.rust_target }}/release/cargo-hold
