@@ -208,6 +208,10 @@ pub fn stow(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) 
         Err(err) => return Err(err),
     };
 
+    if let Some(existing) = existing_metadata.as_ref() {
+        new_metadata.gc_metrics = existing.gc_metrics.clone();
+    }
+
     let existing_preservation = existing_metadata.as_ref().and_then(|existing| {
         existing
             .last_gc_mtime_nanos

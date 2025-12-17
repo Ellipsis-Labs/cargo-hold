@@ -146,6 +146,34 @@ fn test_stow_preserves_last_gc_timestamp_when_time_advances() {
     assert_eq!(second_preservation, expected_nanos);
 }
 
+#[test]
+fn test_stow_preserves_gc_metrics() {
+    let temp_dir = setup_git_repo();
+    let metadata_path = temp_dir.path().join("test.metadata");
+
+    let mut existing = StateMetadata::new();
+    existing.gc_metrics = GcMetrics {
+        runs: 3,
+        seed_initial_size: Some(123),
+        recent_initial_sizes: vec![100, 110, 120],
+        recent_bytes_freed: vec![10, 20, 30],
+        last_suggested_cap: Some(456),
+        recent_final_sizes: vec![90, 95, 100],
+        last_cap_trace: Some(crate::state::CapTrace {
+            baseline: 100,
+            growth_budget: 20,
+            observed_growth_pct: 5,
+            clamp_reason: "deadband/hold".to_string(),
+        }),
+    };
+    save_metadata(&existing, &metadata_path).unwrap();
+
+    stow(&metadata_path, 0, false, temp_dir.path()).unwrap();
+    let reloaded = load_metadata(&metadata_path).unwrap();
+
+    assert_eq!(reloaded.gc_metrics, existing.gc_metrics);
+}
+
 fn make_profile(target: &Path) {
     let profile = target.join("debug");
     fs::create_dir_all(profile.join("build")).unwrap();
