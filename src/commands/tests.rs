@@ -6,7 +6,8 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::commands::heave::{
-    MAX_GROWTH_FACTOR_PER_RUN_PCT, MAX_SHRINK_FACTOR_PER_RUN_PCT, suggest_max_target_size,
+    HARD_CEILING_MIN_FINALS, MAX_GROWTH_FACTOR_PER_RUN_PCT, MAX_SHRINK_FACTOR_PER_RUN_PCT,
+    MIN_HEADROOM_BYTES, suggest_max_target_size,
 };
 use crate::metadata::{load_metadata, save_metadata};
 use crate::state::{GcMetrics, METADATA_VERSION, StateMetadata};
@@ -212,8 +213,8 @@ fn test_heave_auto_cap_records_metrics() {
     assert!(
         metrics
             .last_suggested_cap
-            .is_some_and(|cap| cap == 12 * 1024 * 1024)
-    ); // capped at 2x max final (6 MiB -> 12 MiB)
+            .is_some_and(|cap| cap == MIN_HEADROOM_BYTES + 6 * 1024 * 1024)
+    );
     assert!(!metrics.recent_initial_sizes.is_empty());
 }
 
@@ -244,6 +245,54 @@ fn test_heave_auto_cap_can_be_disabled() {
     assert!(reloaded.gc_metrics.last_suggested_cap.is_none());
 }
 
+#[test]
+fn cold_start_from_current_skips_hard_ceiling() {
+    let metrics = GcMetrics::default();
+    let seed = 1 * 1024 * 1024;
+
+    let (cap, trace) = suggest_max_target_size(&metrics, Some(seed)).unwrap();
+
+    assert_eq!(cap, seed + MIN_HEADROOM_BYTES);
+    assert_eq!(trace.clamp_reason, "cold-start");
+}
+
+#[test]
+fn finals_without_initials_still_respect_hard_ceiling() {
+    let gib = 1024 * 1024 * 1024;
+    let mut metrics = GcMetrics::default();
+    metrics.recent_final_sizes = vec![2 * gib];
+
+    let (cap, trace) = suggest_max_target_size(&metrics, Some(1 * gib)).unwrap();
+
+    assert_eq!(cap, 4 * gib);
+    assert_eq!(trace.clamp_reason, "cold-start");
+}
+
+#[test]
+fn zero_finals_shrink_slowly_from_prev_cap() {
+    let gib = 1024 * 1024 * 1024;
+    let metrics = mk_metrics_with_finals(&[0, 0], &[0, 0], &[0, 0], Some(10 * gib));
+
+    let (cap, trace) = suggest_max_target_size(&metrics, Some(10 * gib)).unwrap();
+
+    let max_down = 10 * gib - (10 * gib * MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100;
+    assert_eq!(cap, max_down);
+    assert_eq!(trace.clamp_reason, "clamped:-shrink");
+}
+
+#[test]
+fn tiny_restore_shrinks_by_max_down_not_below_headroom_floor() {
+    let gib = 1024 * 1024 * 1024;
+    let tiny = 50 * 1024 * 1024;
+    let metrics = mk_metrics_with_finals(&[tiny, tiny], &[0, 0], &[tiny, tiny], Some(10 * gib));
+
+    let (cap, trace) = suggest_max_target_size(&metrics, Some(tiny)).unwrap();
+
+    let max_down = 10 * gib - (10 * gib * MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100;
+    assert_eq!(cap, max_down);
+    assert_eq!(trace.clamp_reason, "clamped:-shrink");
+}
+
 fn mk_metrics(initials: &[u64], freed: &[u64], last_cap: Option<u64>) -> GcMetrics {
     GcMetrics {
         runs: initials.len() as u32,
@@ -271,6 +320,36 @@ fn mk_metrics_with_finals(
         recent_final_sizes: finals.to_vec(),
         last_cap_trace: None,
     }
+}
+
+#[test]
+fn hard_ceiling_requires_min_history() {
+    let gib = 1024 * 1024 * 1024;
+    let mut metrics = GcMetrics::default();
+    metrics.recent_final_sizes = vec![10 * gib; HARD_CEILING_MIN_FINALS];
+    metrics.recent_initial_sizes = vec![40 * gib; HARD_CEILING_MIN_FINALS];
+    metrics.recent_bytes_freed = vec![30 * gib; HARD_CEILING_MIN_FINALS];
+
+    let (cap, trace) = suggest_max_target_size(&metrics, Some(12 * gib)).unwrap();
+
+    assert_eq!(cap, 20 * gib);
+    assert_eq!(trace.clamp_reason, "hard-ceiling");
+}
+
+#[test]
+fn hard_ceiling_does_not_bypass_shrink_clamp() {
+    let gib = 1024 * 1024 * 1024;
+    let mut metrics = GcMetrics::default();
+    metrics.last_suggested_cap = Some(10 * gib);
+    metrics.recent_final_sizes = vec![1 * gib; HARD_CEILING_MIN_FINALS];
+    metrics.recent_initial_sizes = vec![40 * gib; HARD_CEILING_MIN_FINALS];
+    metrics.recent_bytes_freed = vec![39 * gib; HARD_CEILING_MIN_FINALS];
+
+    let (cap, trace) = suggest_max_target_size(&metrics, Some(12 * gib)).unwrap();
+
+    let max_down = 10 * gib - (10 * gib * MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100;
+    assert_eq!(cap, max_down);
+    assert_eq!(trace.clamp_reason, "clamped:-shrink");
 }
 
 #[test]
