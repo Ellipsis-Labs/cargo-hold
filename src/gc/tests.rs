@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use cargo_hold::gc::{
+use proptest::prelude::*;
+
+use super::artifacts::{
     ArtifactInfo, CrateArtifact, parse_crate_artifact_name, select_artifacts_for_removal,
 };
-use proptest::prelude::*;
+use super::size::{format_size, parse_size};
 
 // Property test strategies
 
@@ -306,7 +308,7 @@ fn test_combined_selection_preserves_previous_build_artifacts() {
     // Set specific timestamps
     artifacts[0].newest_mtime = one_day_ago; // Old artifact
     artifacts[1].newest_mtime = one_hour_ago; // Recent artifact (was two_hours_ago, now within preservation window)
-    artifacts[2].newest_mtime = one_hour_ago; // Recent artifact  
+    artifacts[2].newest_mtime = one_hour_ago; // Recent artifact
     artifacts[3].newest_mtime = one_hour_ago; // Recent artifact
 
     // Total: 14KB, max size: 6KB (need to free 8KB)
@@ -417,8 +419,6 @@ fn test_combined_selection_exceeds_size_for_preservation() {
     // Should only select old artifacts
     assert_eq!(selected.len(), 2);
     assert!(selected.iter().all(|a| a.name.starts_with("old")));
-
-    // Final size would be 15KB (exceeding the 5KB limit) but that's OK
 }
 
 #[test]
@@ -533,8 +533,8 @@ fn test_combined_selection_mixed_ages_with_preservation() {
     // Should remove:
     // - very_old (10 days old, exceeds age threshold)
     // - old (2 days old, needed for size but not protected)
+    // - medium_old (12 hours, under age threshold and needed for size)
     // Should NOT remove:
-    // - medium_old (12 hours, under age threshold and helps with size)
     // - recent_preserve (protected by previous build timestamp)
     // - very_recent_preserve (protected by previous build timestamp)
 
@@ -543,4 +543,294 @@ fn test_combined_selection_mixed_ages_with_preservation() {
     assert!(selected.iter().any(|a| a.name == "old"));
     assert!(selected.iter().any(|a| a.name == "medium_old"));
     assert!(!selected.iter().any(|a| a.name.contains("preserve")));
+}
+
+#[test]
+fn test_parse_size() {
+    assert_eq!(parse_size("100").unwrap(), 100);
+    assert_eq!(parse_size("100B").unwrap(), 100);
+    assert_eq!(parse_size("1K").unwrap(), 1024);
+    assert_eq!(parse_size("1KB").unwrap(), 1024);
+    assert_eq!(parse_size("1KiB").unwrap(), 1024);
+    assert_eq!(parse_size("2M").unwrap(), 2 * 1024 * 1024);
+    assert_eq!(parse_size("2MB").unwrap(), 2 * 1024 * 1024);
+    assert_eq!(parse_size("2MiB").unwrap(), 2 * 1024 * 1024);
+    assert_eq!(parse_size("3G").unwrap(), 3 * 1024 * 1024 * 1024);
+    assert_eq!(parse_size("3GB").unwrap(), 3 * 1024 * 1024 * 1024);
+    assert_eq!(parse_size("3GiB").unwrap(), 3 * 1024 * 1024 * 1024);
+    assert_eq!(
+        parse_size("1.5G").unwrap(),
+        (1.5 * 1024.0 * 1024.0 * 1024.0) as u64
+    );
+
+    assert!(parse_size("").is_err());
+    assert!(parse_size("abc").is_err());
+    assert!(parse_size("100X").is_err());
+}
+
+#[test]
+fn test_format_size() {
+    assert_eq!(format_size(0), "0 B");
+    assert_eq!(format_size(100), "100 B");
+    assert_eq!(format_size(1024), "1.0 KiB");
+    assert_eq!(format_size(1536), "1.5 KiB");
+    assert_eq!(format_size(1024 * 1024), "1.0 MiB");
+    assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GiB");
+    assert_eq!(format_size(1024_u64.pow(4)), "1.0 TiB");
+}
+
+#[test]
+fn test_parse_crate_artifact_name_legacy_cases() {
+    let path = Path::new("libfoo-123456789abcdef0");
+    let (name, hash) = parse_crate_artifact_name(path).unwrap();
+    assert_eq!(name, "libfoo");
+    assert_eq!(hash, "123456789abcdef0");
+
+    let path = Path::new("serde-1.0.136-78d1b3f8c7b8e0a2");
+    let (name, hash) = parse_crate_artifact_name(path).unwrap();
+    assert_eq!(name, "serde-1.0.136");
+    assert_eq!(hash, "78d1b3f8c7b8e0a2");
+
+    let path = Path::new("foo-bar-baz-0123456789abcdef.d");
+    let (name, hash) = parse_crate_artifact_name(path).unwrap();
+    assert_eq!(name, "foo-bar-baz");
+    assert_eq!(hash, "0123456789abcdef");
+
+    // Invalid cases
+    assert!(parse_crate_artifact_name(Path::new("foo")).is_none());
+    assert!(parse_crate_artifact_name(Path::new("foo-123")).is_none());
+    assert!(parse_crate_artifact_name(Path::new("foo-gggggggggggggggg")).is_none());
+}
+
+#[test]
+fn test_select_artifacts_with_previous_build_timestamp() {
+    let now = SystemTime::now();
+    let five_minutes_ago = now - Duration::from_secs(5 * 60);
+    let ten_minutes_ago = now - Duration::from_secs(10 * 60);
+    let one_hour_ago = now - Duration::from_secs(60 * 60);
+    let two_days_ago = now - Duration::from_secs(2 * 24 * 60 * 60);
+
+    // Create test artifacts
+    let artifacts = vec![
+        CrateArtifact {
+            name: "recent-crate".to_string(),
+            hash: "0000000000000001".to_string(),
+            artifacts: vec![],
+            total_size: 1024 * 1024, // 1MB
+            newest_mtime: five_minutes_ago,
+        },
+        CrateArtifact {
+            name: "previous-build-crate".to_string(),
+            hash: "0000000000000002".to_string(),
+            artifacts: vec![],
+            total_size: 2 * 1024 * 1024, // 2MB
+            newest_mtime: ten_minutes_ago,
+        },
+        CrateArtifact {
+            name: "old-crate".to_string(),
+            hash: "0000000000000003".to_string(),
+            artifacts: vec![],
+            total_size: 3 * 1024 * 1024, // 3MB
+            newest_mtime: one_hour_ago,
+        },
+        CrateArtifact {
+            name: "very-old-crate".to_string(),
+            hash: "0000000000000004".to_string(),
+            artifacts: vec![],
+            total_size: 4 * 1024 * 1024, // 4MB
+            newest_mtime: two_days_ago,
+        },
+    ];
+
+    // Convert ten_minutes_ago to nanos for previous build timestamp
+    let previous_build_nanos = ten_minutes_ago
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    // Test 1: With previous build timestamp, recent artifacts should be preserved
+    let to_remove = select_artifacts_for_removal(
+        &artifacts,
+        10 * 1024 * 1024,      // 10MB total
+        Some(5 * 1024 * 1024), // 5MB max
+        1,                     // 1 day age threshold
+        Some(previous_build_nanos),
+        0, // verbose
+        false,
+    );
+
+    // Should preserve artifacts from ten_minutes_ago and five_minutes_ago
+    // Should remove very-old-crate (age) and old-crate (size)
+    assert_eq!(to_remove.len(), 2);
+    assert!(to_remove.iter().any(|a| a.name == "very-old-crate"));
+    assert!(to_remove.iter().any(|a| a.name == "old-crate"));
+
+    // Test 2: Without previous build timestamp, all old artifacts can be removed
+    let to_remove_no_preserve = select_artifacts_for_removal(
+        &artifacts,
+        10 * 1024 * 1024,      // 10MB total
+        Some(5 * 1024 * 1024), // 5MB max
+        1,                     // 1 day age threshold
+        None,                  // No previous build timestamp
+        0,                     // verbose
+        false,
+    );
+
+    // Should remove very-old-crate (age) and others for size
+    assert!(to_remove_no_preserve.len() >= 2);
+    assert!(
+        to_remove_no_preserve
+            .iter()
+            .any(|a| a.name == "very-old-crate")
+    );
+}
+
+#[test]
+fn test_select_artifacts_skips_stale_previous_timestamp() {
+    let now = SystemTime::now();
+    let ten_days_ago = now - Duration::from_secs(10 * 24 * 60 * 60);
+    let two_days_ago = now - Duration::from_secs(2 * 24 * 60 * 60);
+    let stale_previous = now - Duration::from_secs(30 * 24 * 60 * 60);
+
+    let stale_nanos = stale_previous
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    let artifacts = vec![
+        CrateArtifact {
+            name: "old-crate".to_string(),
+            hash: "aaaaaaaaaaaaaaaa".to_string(),
+            artifacts: vec![],
+            total_size: 2 * 1024 * 1024,
+            newest_mtime: ten_days_ago,
+        },
+        CrateArtifact {
+            name: "recent-crate".to_string(),
+            hash: "bbbbbbbbbbbbbbbb".to_string(),
+            artifacts: vec![],
+            total_size: 2 * 1024 * 1024,
+            newest_mtime: two_days_ago,
+        },
+    ];
+
+    let to_remove = select_artifacts_for_removal(
+        &artifacts,
+        4 * 1024 * 1024,
+        None,
+        7,
+        Some(stale_nanos),
+        0,
+        false,
+    );
+
+    assert_eq!(to_remove.len(), 1);
+    assert_eq!(to_remove[0].name, "old-crate");
+}
+
+#[test]
+fn test_select_artifacts_preserves_recent_previous_timestamp_with_buffer() {
+    let now = SystemTime::now();
+    let two_minutes_ago = now - Duration::from_secs(2 * 60);
+    let eight_days_ago = now - Duration::from_secs(8 * 24 * 60 * 60);
+
+    let previous_build_nanos = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    let artifacts = vec![
+        CrateArtifact {
+            name: "recent-build".to_string(),
+            hash: "cccccccccccccccc".to_string(),
+            artifacts: vec![],
+            total_size: 3 * 1024 * 1024,
+            newest_mtime: two_minutes_ago,
+        },
+        CrateArtifact {
+            name: "older-build".to_string(),
+            hash: "dddddddddddddddd".to_string(),
+            artifacts: vec![],
+            total_size: 3 * 1024 * 1024,
+            newest_mtime: eight_days_ago,
+        },
+    ];
+
+    let to_remove = select_artifacts_for_removal(
+        &artifacts,
+        6 * 1024 * 1024,
+        Some(1024 * 1024),
+        7,
+        Some(previous_build_nanos),
+        0,
+        false,
+    );
+
+    assert_eq!(to_remove.len(), 1);
+    assert_eq!(to_remove[0].name, "older-build");
+}
+
+#[test]
+fn test_size_cleanup_after_previous_build_expires() {
+    let now = SystemTime::now();
+    let fresh = now - Duration::from_secs(60);
+
+    let artifacts = vec![
+        CrateArtifact {
+            name: "fresh-a".to_string(),
+            hash: "aaaaaaaaaaaaaaaa".to_string(),
+            artifacts: vec![],
+            total_size: 3 * 1024 * 1024,
+            newest_mtime: fresh,
+        },
+        CrateArtifact {
+            name: "fresh-b".to_string(),
+            hash: "bbbbbbbbbbbbbbbb".to_string(),
+            artifacts: vec![],
+            total_size: 3 * 1024 * 1024,
+            newest_mtime: fresh,
+        },
+    ];
+
+    let current_size = 6 * 1024 * 1024;
+    let cap = 4 * 1024 * 1024;
+    let age_threshold_days = 1;
+
+    // Preservation active: nothing should be evicted even though we're over cap.
+    let previous_build_nanos = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let preserved = select_artifacts_for_removal(
+        &artifacts,
+        current_size,
+        Some(cap),
+        age_threshold_days,
+        Some(previous_build_nanos),
+        0,
+        false,
+    );
+    assert!(preserved.is_empty());
+
+    // Simulate the previous build timestamp aging out of the preservation window.
+    let stale_previous = now - Duration::from_secs(2 * 24 * 60 * 60);
+    let stale_previous_nanos = stale_previous
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    let evicted = select_artifacts_for_removal(
+        &artifacts,
+        current_size,
+        Some(cap),
+        age_threshold_days,
+        Some(stale_previous_nanos),
+        0,
+        false,
+    );
+
+    // With preservation skipped, size-based cleanup should evict to meet the cap.
+    assert!(!evicted.is_empty());
+    let freed: u64 = evicted.iter().map(|a| a.total_size).sum();
+    assert!(freed >= current_size - cap);
 }

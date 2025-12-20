@@ -101,6 +101,7 @@ pub mod gc;
 // Internal modules
 mod discovery;
 mod hashing;
+mod logging;
 mod metadata;
 mod state;
 mod timestamp;
