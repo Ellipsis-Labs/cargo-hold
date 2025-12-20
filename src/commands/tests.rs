@@ -248,7 +248,7 @@ fn test_heave_auto_cap_can_be_disabled() {
 #[test]
 fn cold_start_from_current_skips_hard_ceiling() {
     let metrics = GcMetrics::default();
-    let seed = 1 * 1024 * 1024;
+    let seed = 1024 * 1024;
 
     let (cap, trace) = suggest_max_target_size(&metrics, Some(seed)).unwrap();
 
@@ -259,10 +259,12 @@ fn cold_start_from_current_skips_hard_ceiling() {
 #[test]
 fn finals_without_initials_still_respect_hard_ceiling() {
     let gib = 1024 * 1024 * 1024;
-    let mut metrics = GcMetrics::default();
-    metrics.recent_final_sizes = vec![2 * gib];
+    let metrics = GcMetrics {
+        recent_final_sizes: vec![2 * gib],
+        ..Default::default()
+    };
 
-    let (cap, trace) = suggest_max_target_size(&metrics, Some(1 * gib)).unwrap();
+    let (cap, trace) = suggest_max_target_size(&metrics, Some(gib)).unwrap();
 
     assert_eq!(cap, 4 * gib);
     assert_eq!(trace.clamp_reason, "cold-start");
@@ -325,10 +327,12 @@ fn mk_metrics_with_finals(
 #[test]
 fn hard_ceiling_requires_min_history() {
     let gib = 1024 * 1024 * 1024;
-    let mut metrics = GcMetrics::default();
-    metrics.recent_final_sizes = vec![10 * gib; HARD_CEILING_MIN_FINALS];
-    metrics.recent_initial_sizes = vec![40 * gib; HARD_CEILING_MIN_FINALS];
-    metrics.recent_bytes_freed = vec![30 * gib; HARD_CEILING_MIN_FINALS];
+    let metrics = GcMetrics {
+        recent_final_sizes: vec![10 * gib; HARD_CEILING_MIN_FINALS],
+        recent_initial_sizes: vec![40 * gib; HARD_CEILING_MIN_FINALS],
+        recent_bytes_freed: vec![30 * gib; HARD_CEILING_MIN_FINALS],
+        ..Default::default()
+    };
 
     let (cap, trace) = suggest_max_target_size(&metrics, Some(12 * gib)).unwrap();
 
@@ -339,11 +343,13 @@ fn hard_ceiling_requires_min_history() {
 #[test]
 fn hard_ceiling_does_not_bypass_shrink_clamp() {
     let gib = 1024 * 1024 * 1024;
-    let mut metrics = GcMetrics::default();
-    metrics.last_suggested_cap = Some(10 * gib);
-    metrics.recent_final_sizes = vec![1 * gib; HARD_CEILING_MIN_FINALS];
-    metrics.recent_initial_sizes = vec![40 * gib; HARD_CEILING_MIN_FINALS];
-    metrics.recent_bytes_freed = vec![39 * gib; HARD_CEILING_MIN_FINALS];
+    let metrics = GcMetrics {
+        last_suggested_cap: Some(10 * gib),
+        recent_final_sizes: vec![gib; HARD_CEILING_MIN_FINALS],
+        recent_initial_sizes: vec![40 * gib; HARD_CEILING_MIN_FINALS],
+        recent_bytes_freed: vec![39 * gib; HARD_CEILING_MIN_FINALS],
+        ..Default::default()
+    };
 
     let (cap, trace) = suggest_max_target_size(&metrics, Some(12 * gib)).unwrap();
 
