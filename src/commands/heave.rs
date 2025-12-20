@@ -13,6 +13,7 @@ pub(crate) const MIN_STEADY_HEADROOM_BYTES: u64 = 256 * 1024 * 1024; // 256 MiB 
 pub(crate) const MAX_GROWTH_FACTOR_PER_RUN_PCT: u64 = 10; // limit upward drift to +10% per run
 pub(crate) const MAX_SHRINK_FACTOR_PER_RUN_PCT: u64 = 10; // limit downward drift to -10% per run
 pub(crate) const GROWTH_DEADBAND_PCT: u64 = 5; // tolerate small oscillations without moving the cap
+pub(crate) const HARD_CEILING_MIN_FINALS: usize = 3; // require enough history before clamping
 
 pub struct Heave<'a> {
     target_dir: &'a Path,
@@ -286,7 +287,10 @@ pub(crate) fn suggest_max_target_size(
     metrics: &GcMetrics,
     seed_from_current: Option<u64>,
 ) -> Option<(u64, CapTrace)> {
-    let seed = metrics.seed_initial_size.or(seed_from_current)?;
+    let (seed, seeded_from_current) = match metrics.seed_initial_size {
+        Some(seed) => (seed, false),
+        None => (seed_from_current?, true),
+    };
 
     let finals = finals_from_metrics(metrics, seed);
     let growths = growths_from_metrics(metrics, &finals, seed);
@@ -298,6 +302,22 @@ pub(crate) fn suggest_max_target_size(
     let mut proposed = baseline.saturating_add(growth_budget);
 
     let mut clamp_reason = "none".to_string();
+
+    let cold_start_from_current = seeded_from_current
+        && metrics.last_suggested_cap.is_none()
+        && metrics.recent_initial_sizes.is_empty()
+        && metrics.recent_bytes_freed.is_empty()
+        && metrics.recent_final_sizes.is_empty();
+    let mut non_zero_finals: Vec<u64> = finals.iter().copied().filter(|v| *v > 0).collect();
+    if !cold_start_from_current && non_zero_finals.len() >= HARD_CEILING_MIN_FINALS {
+        non_zero_finals.sort_unstable();
+        let ceiling_base = percentile(&non_zero_finals, 75);
+        let hard_ceiling = ceiling_base.saturating_mul(2);
+        if proposed > hard_ceiling {
+            proposed = hard_ceiling;
+            clamp_reason = "hard-ceiling".to_string();
+        }
+    }
 
     if let Some(prev_cap) = metrics.last_suggested_cap {
         // If observed growth (based on finals) is within a deadband, hold the cap
@@ -329,7 +349,7 @@ pub(crate) fn suggest_max_target_size(
         let lower = max_down.max(baseline_lower).min(max_up);
 
         let clamped = proposed.clamp(lower, max_up);
-        if clamped != proposed && clamp_reason == "none" {
+        if clamped != proposed {
             clamp_reason = if clamped == max_up {
                 "clamped:+growth"
             } else if clamped == max_down {
@@ -344,14 +364,9 @@ pub(crate) fn suggest_max_target_size(
         proposed = clamped;
     } else {
         proposed = proposed.max(baseline);
-        clamp_reason = "cold-start".to_string();
-    }
-
-    let max_final = finals.iter().copied().max().unwrap_or(baseline);
-    let hard_ceiling = max_final.saturating_mul(2);
-    if proposed > hard_ceiling {
-        proposed = hard_ceiling;
-        clamp_reason = "hard-ceiling".to_string();
+        if clamp_reason == "none" {
+            clamp_reason = "cold-start".to_string();
+        }
     }
 
     let observed_growth_pct = if baseline == 0 {
