@@ -1,20 +1,24 @@
 //! Implementation of cargo-hold subcommands.
-//!
-//! `mod.rs` now serves as a thin dispatcher and re-export hub; command logic
-//! lives in dedicated modules (`anchor`, `heave`, `voyage`).
 
 use std::path::{Path, PathBuf};
 
 use crate::cli::{Cli, Commands};
 use crate::error::{HoldError, Result};
 
-pub(crate) mod anchor;
-pub(crate) mod heave;
-pub(crate) mod voyage;
+pub mod anchor;
+pub mod bilge;
+pub mod gc_options;
+pub mod heave;
+pub mod salvage;
+pub mod stow;
+pub mod voyage;
 
-pub use anchor::{anchor, bilge, salvage, stow};
-pub use heave::{Heave, HeaveBuilder};
-pub use voyage::{Voyage, VoyageBuilder};
+use anchor::anchor;
+use bilge::bilge;
+use heave::Heave;
+use salvage::salvage;
+use stow::stow;
+use voyage::Voyage;
 
 #[cfg(test)]
 mod tests;
@@ -51,39 +55,37 @@ pub fn execute_with_dir(cli: &Cli, working_dir: Option<&Path>) -> Result<()> {
         Commands::Stow => stow(&metadata_path, verbose, quiet, &current_dir),
         Commands::Bilge => bilge(&metadata_path, verbose, quiet),
         Commands::Heave {
-            max_target_size,
+            gc,
             auto_max_target_size,
             dry_run,
             debug,
-            preserve_cargo_binaries,
             age_threshold_days,
         } => Heave::builder()
             .target_dir(&target_dir)
-            .max_target_size(max_target_size.as_deref())
+            .max_target_size(gc.max_target_size())
             .auto_max_target_size(*auto_max_target_size)
             .dry_run(*dry_run)
             .debug(*debug)
-            .preserve_cargo_binaries(preserve_cargo_binaries)
+            .preserve_cargo_binaries(gc.preserve_cargo_binaries())
             .age_threshold_days(*age_threshold_days)
             .verbose(verbose)
             .metadata_path(&metadata_path)
             .quiet(quiet)
-            .build()
+            .build()?
             .heave(),
         Commands::Voyage {
-            max_target_size,
+            gc,
             gc_dry_run,
             gc_debug,
-            preserve_cargo_binaries,
             gc_age_threshold_days,
             gc_auto_max_target_size,
         } => Voyage::builder()
             .metadata_path(&metadata_path)
             .target_dir(&target_dir)
-            .max_target_size(max_target_size.as_deref())
+            .max_target_size(gc.max_target_size())
             .gc_dry_run(*gc_dry_run)
             .gc_debug(*gc_debug)
-            .preserve_cargo_binaries(preserve_cargo_binaries)
+            .preserve_cargo_binaries(gc.preserve_cargo_binaries())
             .gc_age_threshold_days(*gc_age_threshold_days)
             .gc_auto_max_target_size(*gc_auto_max_target_size)
             .verbose(verbose)

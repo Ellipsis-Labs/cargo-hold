@@ -3,7 +3,7 @@
 use std::fs;
 use std::time::{Duration, SystemTime};
 
-use cargo_hold::gc::Gc;
+use cargo_hold::gc::config::Gc;
 
 use crate::common::TempHomeGuard;
 

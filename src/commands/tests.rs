@@ -5,7 +5,7 @@ use filetime::FileTime;
 use tempfile::TempDir;
 
 use super::*;
-use crate::commands::heave::{
+use crate::gc::auto_cap::{
     HARD_CEILING_MIN_FINALS, MAX_GROWTH_FACTOR_PER_RUN_PCT, MAX_SHRINK_FACTOR_PER_RUN_PCT,
     MIN_HEADROOM_BYTES, suggest_max_target_size,
 };
@@ -204,6 +204,7 @@ fn test_heave_auto_cap_records_metrics() {
         .verbose(0)
         .quiet(true)
         .build()
+        .unwrap()
         .heave()
         .unwrap();
 
@@ -238,6 +239,7 @@ fn test_heave_auto_cap_can_be_disabled() {
         .verbose(0)
         .quiet(true)
         .build()
+        .unwrap()
         .heave()
         .unwrap();
 

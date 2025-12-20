@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use cargo_hold::gc::{self, Gc};
+use cargo_hold::gc::config::Gc;
 use tempfile::TempDir;
 
 use crate::common::TempHomeGuard;
@@ -131,58 +131,6 @@ fn create_crate_artifacts(
     }
 
     create_file_with_mtime(&build_dir.join("out"), 2048, age_days).unwrap();
-}
-
-#[test]
-fn test_parse_size() {
-    // Test raw numbers
-    assert_eq!(gc::parse_size("100").unwrap(), 100);
-    assert_eq!(gc::parse_size("1024").unwrap(), 1024);
-
-    // Test with suffixes
-    assert_eq!(gc::parse_size("1K").unwrap(), 1024);
-    assert_eq!(gc::parse_size("1KB").unwrap(), 1024);
-    assert_eq!(gc::parse_size("1KiB").unwrap(), 1024);
-    assert_eq!(gc::parse_size("2M").unwrap(), 2 * 1024 * 1024);
-    assert_eq!(gc::parse_size("2MB").unwrap(), 2 * 1024 * 1024);
-    assert_eq!(gc::parse_size("2MiB").unwrap(), 2 * 1024 * 1024);
-    assert_eq!(gc::parse_size("3G").unwrap(), 3 * 1024 * 1024 * 1024);
-    assert_eq!(gc::parse_size("3GB").unwrap(), 3 * 1024 * 1024 * 1024);
-    assert_eq!(gc::parse_size("3GiB").unwrap(), 3 * 1024 * 1024 * 1024);
-
-    // Test decimal values
-    assert_eq!(
-        gc::parse_size("1.5G").unwrap(),
-        (1.5 * 1024.0 * 1024.0 * 1024.0) as u64
-    );
-    assert_eq!(gc::parse_size("0.5M").unwrap(), 512 * 1024);
-
-    // Test edge cases
-    assert_eq!(gc::parse_size("0").unwrap(), 0);
-    assert_eq!(gc::parse_size("0B").unwrap(), 0);
-
-    // Test error cases
-    assert!(gc::parse_size("").is_err());
-    assert!(gc::parse_size("abc").is_err());
-    assert!(gc::parse_size("100X").is_err());
-}
-
-#[test]
-fn test_format_size() {
-    assert_eq!(gc::format_size(0), "0 B");
-    assert_eq!(gc::format_size(100), "100 B");
-    assert_eq!(gc::format_size(1023), "1023 B");
-    assert_eq!(gc::format_size(1024), "1.0 KiB");
-    assert_eq!(gc::format_size(1536), "1.5 KiB");
-    assert_eq!(gc::format_size(1024 * 1024), "1.0 MiB");
-    assert_eq!(gc::format_size(1024 * 1024 * 1024), "1.0 GiB");
-    assert_eq!(gc::format_size(1024_u64.pow(4)), "1.0 TiB");
-
-    // Test large values
-    assert_eq!(
-        gc::format_size(5 * 1024 * 1024 * 1024 + 512 * 1024 * 1024),
-        "5.5 GiB"
-    );
 }
 
 #[test]

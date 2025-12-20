@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use blake3::Hasher;
 use memmap2::Mmap;
@@ -28,27 +29,7 @@ use crate::error::HoldError;
 /// - The path points to a symbolic link
 /// - Memory mapping fails
 pub fn hash_file(path: &Path) -> Result<String, HoldError> {
-    // Check for symlinks before opening
-    let metadata = std::fs::symlink_metadata(path).map_err(|source| HoldError::IoError {
-        path: path.to_path_buf(),
-        source,
-    })?;
-
-    // Reject symlinks
-    if metadata.is_symlink() {
-        return Err(HoldError::InvalidFileType(
-            path.to_path_buf(),
-            "Symbolic links are not supported".to_string(),
-        ));
-    }
-
-    // Reject directories
-    if metadata.is_dir() {
-        return Err(HoldError::InvalidFileType(
-            path.to_path_buf(),
-            "Directories are not supported".to_string(),
-        ));
-    }
+    let metadata = checked_metadata(path)?;
 
     // Handle empty files without memory mapping
     if metadata.len() == 0 {
@@ -94,12 +75,34 @@ pub fn hash_file(path: &Path) -> Result<String, HoldError> {
 /// - The file cannot be accessed
 /// - The path points to a symbolic link
 pub fn get_file_size(path: &Path) -> Result<u64, HoldError> {
+    Ok(checked_metadata(path)?.len())
+}
+
+/// Gets the file's modification time as nanoseconds since UNIX_EPOCH.
+pub fn get_file_mtime_nanos(path: &Path) -> Result<u128, HoldError> {
+    let metadata = checked_metadata(path)?;
+    let mtime = metadata.modified().map_err(|source| HoldError::IoError {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    let nanos = mtime
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| HoldError::IoError {
+            path: path.to_path_buf(),
+            source: std::io::Error::other("System time is before UNIX epoch"),
+        })?
+        .as_nanos();
+
+    Ok(nanos)
+}
+
+fn checked_metadata(path: &Path) -> Result<std::fs::Metadata, HoldError> {
     let metadata = std::fs::symlink_metadata(path).map_err(|source| HoldError::IoError {
         path: path.to_path_buf(),
         source,
     })?;
 
-    // Reject symlinks
     if metadata.is_symlink() {
         return Err(HoldError::InvalidFileType(
             path.to_path_buf(),
@@ -107,7 +110,6 @@ pub fn get_file_size(path: &Path) -> Result<u64, HoldError> {
         ));
     }
 
-    // Reject directories
     if metadata.is_dir() {
         return Err(HoldError::InvalidFileType(
             path.to_path_buf(),
@@ -115,7 +117,7 @@ pub fn get_file_size(path: &Path) -> Result<u64, HoldError> {
         ));
     }
 
-    Ok(metadata.len())
+    Ok(metadata)
 }
 
 #[cfg(test)]

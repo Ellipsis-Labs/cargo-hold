@@ -3,92 +3,10 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
-use assert_fs::TempDir;
-use cargo_hold::cli::{Cli, Commands};
+use cargo_hold::cli::{Cli, Commands, GcArgs};
 use cargo_hold::commands::execute_with_dir;
-use cargo_hold::error::Result;
-use miette::{Context, IntoDiagnostic};
 
-use crate::common::TempHomeGuard;
-
-struct TestWorkspace {
-    dir: TempDir,
-    _home: TempHomeGuard,
-}
-
-impl TestWorkspace {
-    fn new() -> Self {
-        let home = TempHomeGuard::new();
-        let dir = TempDir::new().unwrap();
-        Self { dir, _home: home }
-    }
-}
-
-impl std::ops::Deref for TestWorkspace {
-    type Target = TempDir;
-
-    fn deref(&self) -> &Self::Target {
-        &self.dir
-    }
-}
-
-impl std::ops::DerefMut for TestWorkspace {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.dir
-    }
-}
-
-/// Helper to create a test Git repository
-fn setup_test_repo() -> TestWorkspace {
-    let temp_dir = TestWorkspace::new();
-
-    // Initialize git repo
-    let repo = git2::Repository::init(temp_dir.path()).unwrap();
-
-    // Create test files
-    let src_dir = temp_dir.path().join("src");
-    fs::create_dir(&src_dir).unwrap();
-
-    let main_rs = src_dir.join("main.rs");
-    fs::write(&main_rs, "fn main() { println!(\"Hello\"); }").unwrap();
-
-    let lib_rs = src_dir.join("lib.rs");
-    fs::write(&lib_rs, "pub fn hello() { }").unwrap();
-
-    // Add files to git index
-    let mut index = repo.index().unwrap();
-    index.add_path(Path::new("src/main.rs")).unwrap();
-    index.add_path(Path::new("src/lib.rs")).unwrap();
-    index.write().unwrap();
-
-    temp_dir
-}
-
-/// Helper to execute a command using the library
-fn execute_command(command: Commands, temp_dir: &TempDir, verbose: u8) -> Result<()> {
-    execute_command_with_dir(command, temp_dir, temp_dir.path(), verbose)
-}
-
-/// Helper to execute a command from a specific directory
-fn execute_command_with_dir(
-    command: Commands,
-    temp_dir: &TempDir,
-    working_dir: &Path,
-    verbose: u8,
-) -> Result<()> {
-    // Use absolute paths for everything
-    let target_dir = temp_dir.path().join("target");
-
-    let cli = Cli::builder()
-        .target_dir(target_dir)
-        .verbose(verbose)
-        .quiet(false)
-        .command(command)
-        .build()?;
-
-    // Use the new execute_with_dir function
-    execute_with_dir(&cli, Some(working_dir))
-}
+use super::helpers::*;
 
 #[test]
 fn test_anchor_command_creates_cache() {
@@ -331,10 +249,9 @@ fn test_heave_command() {
     fs::create_dir_all(&target_dir).unwrap();
 
     let heave_command = Commands::Heave {
-        max_target_size: Some("1M".to_string()),
+        gc: GcArgs::new(Some("1M".to_string()), vec![]),
         dry_run: true,
         debug: false,
-        preserve_cargo_binaries: vec![],
         age_threshold_days: 7,
         auto_max_target_size: true,
     };
@@ -348,10 +265,9 @@ fn test_voyage_command() {
     let temp_dir = setup_test_repo();
 
     let voyage_command = Commands::Voyage {
-        max_target_size: None,
+        gc: GcArgs::new(None, vec![]),
         gc_dry_run: true,
         gc_debug: false,
-        preserve_cargo_binaries: vec![],
         gc_age_threshold_days: 7,
         gc_auto_max_target_size: true,
     };
@@ -371,10 +287,9 @@ fn test_voyage_command_from_subdirectory() {
     fs::create_dir(&subdir).unwrap();
 
     let voyage_command = Commands::Voyage {
-        max_target_size: None,
+        gc: GcArgs::new(None, vec![]),
         gc_dry_run: true,
         gc_debug: false,
-        preserve_cargo_binaries: vec![],
         gc_age_threshold_days: 7,
         gc_auto_max_target_size: true,
     };
@@ -384,184 +299,6 @@ fn test_voyage_command_from_subdirectory() {
     let metadata_path = temp_dir.path().join("target/cargo-hold.metadata");
     assert!(metadata_path.exists());
     assert!(!subdir.join("target/cargo-hold.metadata").exists());
-}
-
-/// Helper to create a complete Cargo project with Cargo.toml
-fn setup_cargo_project() -> TestWorkspace {
-    let temp_dir = TestWorkspace::new();
-
-    // Initialize git repo
-    let repo = git2::Repository::init(temp_dir.path()).unwrap();
-
-    // Create Cargo.toml
-    let cargo_toml = temp_dir.path().join("Cargo.toml");
-    fs::write(
-        &cargo_toml,
-        r#"[package]
-name = "test-project"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "test-bin"
-path = "src/main.rs"
-
-[dependencies]
-"#,
-    )
-    .unwrap();
-
-    // Create src directory and files
-    let src_dir = temp_dir.path().join("src");
-    fs::create_dir(&src_dir).unwrap();
-
-    let main_rs = src_dir.join("main.rs");
-    fs::write(
-        &main_rs,
-        r#"fn main() {
-    println!("Hello, world!");
-    lib_function();
-}
-
-fn lib_function() {
-    println!("Library function called");
-}
-"#,
-    )
-    .unwrap();
-
-    let lib_rs = src_dir.join("lib.rs");
-    fs::write(
-        &lib_rs,
-        r#"pub fn hello() {
-    println!("Hello from lib");
-}
-
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
-"#,
-    )
-    .unwrap();
-
-    // Add files to git index
-    let mut index = repo.index().unwrap();
-    index.add_path(Path::new("Cargo.toml")).unwrap();
-    index.add_path(Path::new("src/main.rs")).unwrap();
-    index.add_path(Path::new("src/lib.rs")).unwrap();
-    index.write().unwrap();
-
-    // Create initial commit
-    let sig = git2::Signature::now("Test User", "test@example.com").unwrap();
-    let tree_id = index.write_tree().unwrap();
-    let tree = repo.find_tree(tree_id).unwrap();
-    repo.commit(Some("HEAD"), &sig, &sig, "Initial commit", &tree, &[])
-        .unwrap();
-
-    temp_dir
-}
-
-/// Helper to run a cargo command in a directory
-fn run_cargo_command(args: &[&str], working_dir: &Path) -> miette::Result<std::process::Output> {
-    let output = Command::new("cargo")
-        .args(args)
-        .current_dir(working_dir)
-        .output()
-        .into_diagnostic()?;
-    Ok(output)
-}
-
-/// Helper to run cargo-hold voyage command
-fn run_voyage(temp_dir: &TempDir, verbose: u8) -> Result<()> {
-    execute_command(
-        Commands::Voyage {
-            max_target_size: None,
-            gc_dry_run: false,
-            gc_debug: false,
-            preserve_cargo_binaries: vec![],
-            gc_age_threshold_days: 7,
-            gc_auto_max_target_size: true,
-        },
-        temp_dir,
-        verbose,
-    )
-}
-
-/// Helper to reset all source file timestamps to current time
-fn reset_source_timestamps(project_dir: &Path) -> miette::Result<()> {
-    let current_time = SystemTime::now();
-
-    // Reset Cargo.toml
-    let cargo_toml = project_dir.join("Cargo.toml");
-    if cargo_toml.exists() {
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .open(&cargo_toml)
-            .into_diagnostic()
-            .wrap_err("Failed to open Cargo.toml")?;
-        file.set_modified(current_time)
-            .into_diagnostic()
-            .wrap_err("Failed to set modified time")?;
-    }
-
-    // Reset all .rs files in src/
-    let src_dir = project_dir.join("src");
-    if src_dir.exists() {
-        for entry in fs::read_dir(&src_dir)
-            .into_diagnostic()
-            .wrap_err("Failed to read src dir")?
-        {
-            let entry = entry.into_diagnostic().wrap_err("Failed to read entry")?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("rs") {
-                let file = fs::OpenOptions::new()
-                    .write(true)
-                    .open(&path)
-                    .into_diagnostic()
-                    .wrap_err("Failed to open file")?;
-                file.set_modified(current_time)
-                    .into_diagnostic()
-                    .wrap_err("Failed to set modified time")?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Helper to check if artifacts were built by comparing timestamps
-#[allow(dead_code)]
-fn artifacts_were_built(target_dir: &Path, before_time: SystemTime) -> bool {
-    let debug_dir = target_dir.join("debug");
-    if !debug_dir.exists() {
-        return false;
-    }
-
-    // Check for build artifacts newer than before_time
-    for entry in fs::read_dir(&debug_dir)
-        .unwrap_or_else(|_| panic!("Could not read debug dir"))
-        .flatten()
-    {
-        let path = entry.path();
-        if let Ok(metadata) = fs::metadata(&path)
-            && let Ok(mtime) = metadata.modified()
-            && mtime > before_time
-        {
-            return true;
-        }
-    }
-    false
 }
 
 #[test]
@@ -793,10 +530,9 @@ fn test_voyage_from_subdirectory() {
     // Run voyage from subdirectory using execute_command_with_dir
     execute_command_with_dir(
         Commands::Voyage {
-            max_target_size: None,
+            gc: GcArgs::new(None, vec![]),
             gc_dry_run: false,
             gc_debug: false,
-            preserve_cargo_binaries: vec![],
             gc_age_threshold_days: 7,
             gc_auto_max_target_size: true,
         },
@@ -899,10 +635,9 @@ edition = "2021"
         .verbose(0)
         .quiet(false)
         .command(Commands::Voyage {
-            max_target_size: None,
+            gc: GcArgs::new(None, vec![]),
             gc_dry_run: false,
             gc_debug: false,
-            preserve_cargo_binaries: vec![],
             gc_age_threshold_days: 7,
             gc_auto_max_target_size: true,
         })
@@ -1000,10 +735,9 @@ fn test_timestamp_preservation_workflow() {
 
     // Step 5: Run heave with a small size limit to force cleanup
     let heave_command = Commands::Heave {
-        max_target_size: Some("1K".to_string()), // Very small to force cleanup
+        gc: GcArgs::new(Some("1K".to_string()), vec![]), // Very small to force cleanup
         dry_run: false,
         debug: true,
-        preserve_cargo_binaries: vec![],
         age_threshold_days: 30, // High so age doesn't interfere
         auto_max_target_size: true,
     };
@@ -1060,10 +794,9 @@ fn test_heave_removes_old_artifacts_by_age() {
     fs::create_dir_all(&fresh_fingerprint).unwrap();
 
     let heave_command = Commands::Heave {
-        max_target_size: None,
+        gc: GcArgs::new(None, vec![]),
         dry_run: false,
         debug: true,
-        preserve_cargo_binaries: vec![],
         age_threshold_days: 7,
         auto_max_target_size: true,
     };
@@ -1126,10 +859,9 @@ fn test_heave_preserves_recent_artifact_after_delayed_stow() {
     filetime::set_file_mtime(&invoked, filetime::FileTime::from_system_time(one_hour_ago)).unwrap();
 
     let heave_command = Commands::Heave {
-        max_target_size: Some("1K".to_string()),
+        gc: GcArgs::new(Some("1K".to_string()), vec![]),
         dry_run: false,
         debug: true,
-        preserve_cargo_binaries: vec![],
         age_threshold_days: 30,
         auto_max_target_size: true,
     };
@@ -1175,10 +907,9 @@ fn test_heave_with_preservation_message() {
 
     // Run heave - it should load the metadata and use last_gc_mtime_nanos
     let heave_command = Commands::Heave {
-        max_target_size: None,
+        gc: GcArgs::new(None, vec![]),
         dry_run: true, // Dry run to avoid actual deletion
         debug: true,
-        preserve_cargo_binaries: vec![],
         age_threshold_days: 0, // Remove everything old
         auto_max_target_size: true,
     };
@@ -1187,22 +918,4 @@ fn test_heave_with_preservation_message() {
     // The message "Using previous build timestamp for artifact preservation" should
     // be shown
     execute_command(heave_command, &temp_dir, 2).unwrap();
-}
-
-// Helper function to calculate directory size
-fn get_directory_size(path: &Path) -> u64 {
-    let mut size = 0;
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Ok(metadata) = fs::metadata(&path) {
-                    size += metadata.len();
-                }
-            } else if path.is_dir() {
-                size += get_directory_size(&path);
-            }
-        }
-    }
-    size
 }
