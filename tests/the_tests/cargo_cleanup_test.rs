@@ -38,14 +38,17 @@ fn test_clean_cargo_registry_with_mock_home() {
         .age_threshold_days(7)
         .build();
 
-    let bytes_freed = config
+    let registry_stats = config
         .clean_cargo_registry_with_home(&cargo_home, 0)
         .unwrap();
 
     // Verify old file is removed and new file is kept
     assert!(!old_file.exists(), "Old file should be removed");
     assert!(new_file.exists(), "New file should be kept");
-    assert!(bytes_freed > 0, "Should have freed some bytes");
+    assert!(
+        registry_stats.bytes_freed > 0,
+        "Should have freed some bytes"
+    );
 }
 
 #[test]
