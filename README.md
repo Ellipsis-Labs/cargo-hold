@@ -25,12 +25,13 @@ your incremental compilation sails.
 Each time you run `cargo hold anchor`, it will save the current state of your
 source tree to a metadata file in the `target/` dir, which you then save to your
 caches. When you run `cargo hold heave`, it will clean up old artifacts to
-reclaim disk space while preserving important files.
+reclaim disk space while preserving artifacts newer than the previous GC run.
 
 You can run `cargo hold voyage` to run both `anchor` and `heave` in one command,
 which is useful for CI pipelines. It's recommended that you run `cargo hold
 voyage` _before_ you execute the build in your CI pipeline, and _after_ you
-restore the caches.
+restore the caches so the artifacts produced by the upcoming build are never
+deleted by that GC pass.
 
 ## The Problem: Treacherous Waters Ahead! ⛈️
 
@@ -287,15 +288,15 @@ The garbage collector applies both size and age limits together:
 
 - **Removes by crate:** All related files (rlib, rmeta, fingerprint) together
 - **Always preserves:** Binaries, Cargo.toml, lock files, and recent artifacts
-- **Preserves previous build artifacts:** Artifacts from the most recent build are never deleted, ensuring optimal cache hit rates in CI
+- **Preserves artifacts newer than the previous GC run:** Recent artifacts are never deleted, ensuring optimal cache hit rates in CI
 - **Deterministic:** Artifacts are processed oldest-first for predictable results
 
 **Cache-aware cleanup:**
 
-cargo-hold tracks the timestamp of the previous build and ensures those artifacts are preserved during garbage collection. This prevents the common CI problem where freshly built artifacts are immediately deleted because the cache exceeds size limits, which would force unnecessary rebuilds on the next run.
+cargo-hold tracks the timestamp of the previous GC run and ensures artifacts newer than that point are preserved during garbage collection. This prevents the common CI problem where freshly built artifacts are immediately deleted because the cache exceeds size limits, which would force unnecessary rebuilds on the next run.
 
-- The `stow` command records the maximum timestamp from the current build
-- The `heave` command uses this timestamp to protect artifacts from the previous build
+- The `heave` command records the time it runs GC
+- The next `heave` command uses that timestamp to protect newer artifacts
 - Even if your cache exceeds the configured size limit after a build, the most recent artifacts remain safe
 - This significantly improves cache effectiveness in CI environments
 

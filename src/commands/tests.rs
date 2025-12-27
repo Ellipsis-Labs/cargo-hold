@@ -1,7 +1,6 @@
 use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use filetime::FileTime;
 use tempfile::TempDir;
 
 use super::*;
@@ -121,19 +120,11 @@ fn test_stow_propagates_future_metadata_error() {
 fn test_stow_preserves_last_gc_timestamp_when_time_advances() {
     let temp_dir = setup_git_repo();
     let metadata_path = temp_dir.path().join("test.metadata");
-    let tracked_file = temp_dir.path().join("test.txt");
-
-    // Simulate a build finishing an hour ago by backdating the tracked file.
     let one_hour_ago = SystemTime::now() - Duration::from_secs(3600);
-    filetime::set_file_mtime(&tracked_file, FileTime::from_system_time(one_hour_ago)).unwrap();
-
-    stow(&metadata_path, 0, false, temp_dir.path()).unwrap();
-    let first_metadata = load_metadata(&metadata_path).unwrap();
-    let first_preservation = first_metadata
-        .last_gc_mtime_nanos
-        .expect("stow should set last_gc_mtime_nanos");
     let expected_nanos = one_hour_ago.duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    assert_eq!(first_preservation, expected_nanos);
+    let mut seed = StateMetadata::new();
+    seed.last_gc_mtime_nanos = Some(expected_nanos);
+    save_metadata(&seed, &metadata_path).unwrap();
 
     // Allow the wall clock to move forward before running stow again.
     std::thread::sleep(Duration::from_millis(10));
@@ -180,6 +171,47 @@ fn make_profile(target: &Path) {
     fs::create_dir_all(profile.join("build")).unwrap();
     fs::create_dir_all(profile.join("deps")).unwrap();
     fs::create_dir_all(profile.join(".fingerprint")).unwrap();
+}
+
+#[test]
+fn test_heave_records_last_gc_timestamp() {
+    let temp_dir = TempDir::new().unwrap();
+    let target_dir = temp_dir.path().join("target");
+    make_profile(&target_dir);
+    let metadata_path = temp_dir.path().join("cargo-hold.metadata");
+
+    let before = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    Heave::builder()
+        .target_dir(&target_dir)
+        .max_target_size(None)
+        .auto_max_target_size(false)
+        .metadata_path(&metadata_path)
+        .age_threshold_days(7)
+        .verbose(0)
+        .quiet(true)
+        .build()
+        .unwrap()
+        .heave()
+        .unwrap();
+
+    let after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    let reloaded = load_metadata(&metadata_path).unwrap();
+    let recorded = reloaded
+        .last_gc_mtime_nanos
+        .expect("heave should record last_gc_mtime_nanos");
+
+    assert!(
+        recorded >= before && recorded <= after,
+        "last_gc_mtime_nanos should reflect GC time"
+    );
 }
 
 #[test]

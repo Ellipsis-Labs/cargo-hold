@@ -1,6 +1,7 @@
 //! Heave (garbage collection) command and helpers.
 
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::commands::gc_options::{GcOptions, GcOptionsBuilder};
 use crate::error::Result;
@@ -131,9 +132,9 @@ impl<'a> Heave<'a> {
         {
             let mtime_secs = (mtime / 1_000_000_000) as u64;
             eprintln!(
-                "Using previous build timestamp for artifact preservation ({}s ago)",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                "Using previous GC timestamp for artifact preservation ({}s ago)",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_secs().saturating_sub(mtime_secs))
                     .unwrap_or(0)
             );
@@ -233,6 +234,14 @@ impl<'a> Heave<'a> {
             if auto_cap_used {
                 metadata.gc_metrics.last_suggested_cap = max_size;
                 metadata.gc_metrics.last_cap_trace = cap_trace.clone();
+            }
+
+            if !self.gc.dry_run() {
+                let gc_time_nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or(Duration::ZERO)
+                    .as_nanos();
+                metadata.last_gc_mtime_nanos = Some(gc_time_nanos);
             }
 
             save_metadata(&metadata, path)?;
