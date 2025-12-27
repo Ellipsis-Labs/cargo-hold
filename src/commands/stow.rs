@@ -1,7 +1,6 @@
 //! Stow command implementation.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
 
@@ -11,7 +10,6 @@ use crate::hashing::{get_file_mtime_nanos, get_file_size, hash_file};
 use crate::logging::Logger;
 use crate::metadata::{load_metadata, save_metadata};
 use crate::state::{FileState, StateMetadata};
-use crate::timestamp::saturating_duration_from_nanos;
 
 /// Executes the stow command.
 ///
@@ -75,41 +73,9 @@ pub fn stow(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) 
         new_metadata.gc_metrics = existing.gc_metrics.clone();
     }
 
-    let existing_preservation = existing_metadata.as_ref().and_then(|existing| {
-        existing
-            .last_gc_mtime_nanos
-            .or_else(|| existing.max_mtime_nanos())
-    });
-
-    let new_max_mtime = new_metadata.max_mtime_nanos();
-
-    let preservation_nanos = match (existing_preservation, new_max_mtime) {
-        (Some(existing), Some(new_max)) => existing.max(new_max),
-        (Some(existing), None) => existing,
-        (None, Some(new_max)) => new_max,
-        (None, None) => SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_nanos(),
-    };
-
-    new_metadata.last_gc_mtime_nanos = Some(preservation_nanos);
-
-    if !log.quiet() && log.level() > 0 {
-        let (preserved_duration, saturated) = saturating_duration_from_nanos(preservation_nanos);
-        if saturated {
-            eprintln!(
-                "Warning: preservation timestamp ({preservation_nanos}) exceeds representable \
-                 range; clamping to ~year 2554.",
-            );
-        }
-        let preserved_time = UNIX_EPOCH + preserved_duration;
-        let elapsed = SystemTime::now()
-            .duration_since(preserved_time)
-            .unwrap_or(Duration::ZERO)
-            .as_secs();
-        eprintln!("Preserving build timestamp for GC: {preservation_nanos} nanos ({elapsed}s ago)",);
-    }
+    new_metadata.last_gc_mtime_nanos = existing_metadata
+        .as_ref()
+        .and_then(|existing| existing.last_gc_mtime_nanos);
 
     save_metadata(&new_metadata, metadata_path)?;
 

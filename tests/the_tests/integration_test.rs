@@ -658,8 +658,8 @@ edition = "2021"
 
 #[test]
 fn test_timestamp_preservation_workflow() {
-    // This test verifies the core feature: stow → stow → heave workflow
-    // with proper timestamp preservation across metadata saves
+    // This test verifies the core feature: heave preserves artifacts newer than
+    // the previous GC timestamp even when size-based cleanup runs.
 
     let temp_dir = setup_cargo_project();
     let metadata_path = temp_dir.path().join("target/cargo-hold.metadata");
@@ -695,7 +695,20 @@ fn test_timestamp_preservation_workflow() {
     let updated_metadata_size = fs::metadata(&metadata_path).unwrap().len();
     assert!(updated_metadata_size > 0);
 
-    // Step 4: Create some old artifacts in target directory to simulate a build
+    // Step 4: Record a GC timestamp before creating new artifacts.
+    let initial_heave = Commands::Heave {
+        gc: GcArgs::new(None, vec![]),
+        dry_run: false,
+        debug: true,
+        age_threshold_days: 30,
+        auto_max_target_size: true,
+    };
+    execute_command(initial_heave, &temp_dir, 2).unwrap();
+
+    std::thread::sleep(Duration::from_millis(10));
+    let recent_time = SystemTime::now();
+
+    // Step 5: Create some old artifacts in target directory to simulate a build
     let target_dir = temp_dir.path().join("target");
     let debug_dir = target_dir.join("debug");
     let deps_dir = debug_dir.join("deps");
@@ -727,13 +740,22 @@ fn test_timestamp_preservation_workflow() {
     // Create a recent artifact (should be preserved)
     let recent_artifact = deps_dir.join("librecent_crate-fedcba0987654321.rlib");
     fs::write(&recent_artifact, vec![0u8; 10000]).unwrap(); // 10KB file
-    // Keep its current timestamp (recent)
+    filetime::set_file_mtime(
+        &recent_artifact,
+        filetime::FileTime::from_system_time(recent_time),
+    )
+    .unwrap();
 
     // Create matching fingerprint for recent artifact
     let recent_fingerprint = fingerprint_dir.join("librecent_crate-fedcba0987654321");
     fs::create_dir_all(&recent_fingerprint).unwrap();
+    filetime::set_file_mtime(
+        &recent_fingerprint,
+        filetime::FileTime::from_system_time(recent_time),
+    )
+    .unwrap();
 
-    // Step 5: Run heave with a small size limit to force cleanup
+    // Step 6: Run heave with a small size limit to force cleanup
     let heave_command = Commands::Heave {
         gc: GcArgs::new(Some("1K".to_string()), vec![]), // Very small to force cleanup
         dry_run: false,
@@ -817,7 +839,7 @@ fn test_heave_removes_old_artifacts_by_age() {
 fn test_heave_preserves_recent_artifact_after_delayed_stow() {
     let temp_dir = setup_cargo_project();
 
-    // Backdate tracked sources to simulate a previous build finishing an hour ago.
+    // Backdate tracked sources to simulate a delayed stow.
     let one_hour_ago = SystemTime::now() - Duration::from_secs(3600);
     let main_rs = temp_dir.path().join("src/main.rs");
     let lib_rs = temp_dir.path().join("src/lib.rs");
@@ -832,6 +854,18 @@ fn test_heave_preserves_recent_artifact_after_delayed_stow() {
 
     execute_command(Commands::Stow, &temp_dir, 0).unwrap();
 
+    let initial_heave = Commands::Heave {
+        gc: GcArgs::new(None, vec![]),
+        dry_run: false,
+        debug: true,
+        age_threshold_days: 30,
+        auto_max_target_size: true,
+    };
+    execute_command(initial_heave, &temp_dir, 2).unwrap();
+
+    std::thread::sleep(Duration::from_millis(10));
+    let recent_time = SystemTime::now();
+
     // Create an artifact representing the most recent build products.
     let debug_dir = temp_dir.path().join("target/debug");
     let deps_dir = debug_dir.join("deps");
@@ -839,11 +873,7 @@ fn test_heave_preserves_recent_artifact_after_delayed_stow() {
 
     let artifact = deps_dir.join("libdelayed-1234567890abcd12.rlib");
     fs::write(&artifact, vec![0u8; 32 * 1024]).unwrap();
-    filetime::set_file_mtime(
-        &artifact,
-        filetime::FileTime::from_system_time(one_hour_ago),
-    )
-    .unwrap();
+    filetime::set_file_mtime(&artifact, filetime::FileTime::from_system_time(recent_time)).unwrap();
 
     // Provide the usual fingerprint structure so GC associates the artifact
     // correctly.
@@ -851,12 +881,12 @@ fn test_heave_preserves_recent_artifact_after_delayed_stow() {
     fs::create_dir_all(&fingerprint).unwrap();
     filetime::set_file_mtime(
         &fingerprint,
-        filetime::FileTime::from_system_time(one_hour_ago),
+        filetime::FileTime::from_system_time(recent_time),
     )
     .unwrap();
     let invoked = fingerprint.join("invoked.timestamp");
     fs::write(&invoked, b"dummy").unwrap();
-    filetime::set_file_mtime(&invoked, filetime::FileTime::from_system_time(one_hour_ago)).unwrap();
+    filetime::set_file_mtime(&invoked, filetime::FileTime::from_system_time(recent_time)).unwrap();
 
     let heave_command = Commands::Heave {
         gc: GcArgs::new(Some("1K".to_string()), vec![]),
@@ -866,13 +896,64 @@ fn test_heave_preserves_recent_artifact_after_delayed_stow() {
         auto_max_target_size: true,
     };
 
-    // If preservation metadata jumps to `now`, this artifact is considered old and
-    // GC deletes it to satisfy the tiny size cap. The fix keeps it.
+    // The artifact is newer than the previous GC timestamp, so it should survive
+    // even under a tight size cap.
     execute_command(heave_command, &temp_dir, 2).unwrap();
 
     assert!(
         artifact.exists(),
         "Recent artifact should remain after heave"
+    );
+    assert!(
+        invoked.exists(),
+        "Fingerprint files should remain after heave"
+    );
+}
+
+#[test]
+fn test_heave_preserves_artifacts_newer_than_previous_gc() {
+    let temp_dir = setup_cargo_project();
+
+    // Run an initial heave to record the GC timestamp.
+    let initial_heave = Commands::Heave {
+        gc: GcArgs::new(None, vec![]),
+        dry_run: false,
+        debug: true,
+        age_threshold_days: 30,
+        auto_max_target_size: true,
+    };
+    execute_command(initial_heave, &temp_dir, 2).unwrap();
+
+    // Create artifacts after the initial GC time.
+    let debug_dir = temp_dir.path().join("target/debug");
+    let deps_dir = debug_dir.join("deps");
+    fs::create_dir_all(&deps_dir).unwrap();
+
+    let artifact = deps_dir.join("libpostgc-1234567890abcd12.rlib");
+    fs::write(&artifact, vec![0u8; 32 * 1024]).unwrap();
+    let now = SystemTime::now();
+    filetime::set_file_mtime(&artifact, filetime::FileTime::from_system_time(now)).unwrap();
+
+    let fingerprint = debug_dir.join(".fingerprint/libpostgc-1234567890abcd12");
+    fs::create_dir_all(&fingerprint).unwrap();
+    filetime::set_file_mtime(&fingerprint, filetime::FileTime::from_system_time(now)).unwrap();
+    let invoked = fingerprint.join("invoked.timestamp");
+    fs::write(&invoked, b"dummy").unwrap();
+    filetime::set_file_mtime(&invoked, filetime::FileTime::from_system_time(now)).unwrap();
+
+    // Run heave again with a tiny size cap to force cleanup.
+    let heave_command = Commands::Heave {
+        gc: GcArgs::new(Some("1K".to_string()), vec![]),
+        dry_run: false,
+        debug: true,
+        age_threshold_days: 30,
+        auto_max_target_size: true,
+    };
+    execute_command(heave_command, &temp_dir, 2).unwrap();
+
+    assert!(
+        artifact.exists(),
+        "Artifacts newer than previous GC should remain after heave"
     );
     assert!(
         invoked.exists(),
@@ -888,12 +969,17 @@ fn test_heave_with_preservation_message() {
     let temp_dir = setup_cargo_project();
     let metadata_path = temp_dir.path().join("target/cargo-hold.metadata");
 
-    // Run stow twice to establish last_gc_mtime_nanos
     execute_command(Commands::Stow, &temp_dir, 0).unwrap();
-    std::thread::sleep(Duration::from_secs(1));
-    execute_command(Commands::Stow, &temp_dir, 0).unwrap();
+    let initial_heave = Commands::Heave {
+        gc: GcArgs::new(None, vec![]),
+        dry_run: false,
+        debug: true,
+        age_threshold_days: 30,
+        auto_max_target_size: true,
+    };
+    execute_command(initial_heave, &temp_dir, 2).unwrap();
 
-    // Metadata should now have last_gc_mtime_nanos set
+    // Metadata should now have last_gc_mtime_nanos set.
     assert!(metadata_path.exists());
 
     // Create target structure with artifacts
@@ -914,8 +1000,8 @@ fn test_heave_with_preservation_message() {
         auto_max_target_size: true,
     };
 
-    // Execute with verbose output to see the preservation message
-    // The message "Using previous build timestamp for artifact preservation" should
-    // be shown
+    // Execute with verbose output to see the preservation message.
+    // The message "Using previous GC timestamp for artifact preservation" should
+    // be shown.
     execute_command(heave_command, &temp_dir, 2).unwrap();
 }
