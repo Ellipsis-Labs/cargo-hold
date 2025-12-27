@@ -157,7 +157,11 @@ impl Gc {
 
         // Clean cargo registry and downloads
         log.verbose(1, "Cleaning cargo registry...");
-        stats.bytes_freed += self.clean_cargo_registry(verbose)?;
+        let registry_stats = self.clean_cargo_registry(verbose)?;
+        stats.bytes_freed += registry_stats.bytes_freed;
+        stats.registry_bytes_freed = registry_stats.bytes_freed;
+        stats.registry_files_removed = registry_stats.files_removed;
+        stats.registry_dirs_removed = registry_stats.dirs_removed;
 
         // Clean cargo binaries
         log.verbose(1, "Cleaning cargo binaries...");
@@ -180,14 +184,18 @@ impl Gc {
     /// # Returns
     ///
     /// Number of bytes freed
-    pub fn clean_cargo_registry(&self, verbose: u8) -> Result<u64> {
+    pub fn clean_cargo_registry(&self, verbose: u8) -> Result<cargo::CargoRegistryStats> {
         let cargo_home = self.cargo_home()?;
 
         self.clean_cargo_registry_with_home(&cargo_home, verbose)
     }
 
     /// Clean cargo registry with custom cargo home (for testing)
-    pub fn clean_cargo_registry_with_home(&self, cargo_home: &Path, verbose: u8) -> Result<u64> {
+    pub fn clean_cargo_registry_with_home(
+        &self,
+        cargo_home: &Path,
+        verbose: u8,
+    ) -> Result<cargo::CargoRegistryStats> {
         cargo::clean_cargo_registry_with_home(self, cargo_home, verbose)
     }
 
@@ -227,6 +235,10 @@ impl Gc {
     }
 
     fn cargo_home(&self) -> Result<PathBuf> {
+        if let Some(path) = std::env::var_os("CARGO_HOME") {
+            return Ok(PathBuf::from(path));
+        }
+
         Ok(home::home_dir()
             .ok_or_else(|| HoldError::GcError("Could not determine home directory".to_string()))?
             .join(".cargo"))
@@ -336,6 +348,12 @@ impl GcBuilder {
 pub struct GcStats {
     /// Total bytes freed
     pub bytes_freed: u64,
+    /// Bytes freed from cargo registry cleanup
+    pub registry_bytes_freed: u64,
+    /// Files removed from cargo registry cleanup
+    pub registry_files_removed: usize,
+    /// Directories removed from cargo registry cleanup
+    pub registry_dirs_removed: usize,
     /// Number of artifacts removed
     pub artifacts_removed: usize,
     /// Number of crates cleaned

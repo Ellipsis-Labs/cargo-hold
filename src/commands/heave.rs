@@ -195,6 +195,12 @@ impl<'a> Heave<'a> {
             eprintln!("  Artifacts removed: {}", stats.artifacts_removed);
             eprintln!("  Crates cleaned: {}", stats.crates_cleaned);
             eprintln!("  Binaries preserved: {}", stats.binaries_preserved);
+            eprintln!(
+                "  Registry cleanup: {} files, {} dirs, {} freed",
+                stats.registry_files_removed,
+                stats.registry_dirs_removed,
+                gc::format_size(stats.registry_bytes_freed)
+            );
 
             if let Some(cap) = max_size {
                 let mode = if auto_cap_used { "auto" } else { "user" };

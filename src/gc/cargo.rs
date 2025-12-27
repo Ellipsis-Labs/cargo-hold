@@ -4,16 +4,22 @@ use std::time::SystemTime;
 
 use rayon::prelude::*;
 
-use super::cleanup::calculate_directory_size;
 use super::config::Gc;
 use crate::error::{HoldError, Result};
+
+#[derive(Debug, Default)]
+pub struct CargoRegistryStats {
+    pub bytes_freed: u64,
+    pub files_removed: usize,
+    pub dirs_removed: usize,
+}
 
 pub(crate) fn clean_cargo_registry_with_home(
     config: &Gc,
     cargo_home: &Path,
     verbose: u8,
-) -> Result<u64> {
-    let mut bytes_freed = 0;
+) -> Result<CargoRegistryStats> {
+    let mut stats = CargoRegistryStats::default();
 
     // Remove credentials
     let credentials_file = cargo_home.join("credentials.toml");
@@ -27,40 +33,49 @@ pub(crate) fn clean_cargo_registry_with_home(
         if !config.dry_run() {
             let _ = fs::remove_file(&credentials_file);
         }
-        bytes_freed += size;
+        stats.bytes_freed += size;
+        stats.files_removed = stats.files_removed.saturating_add(1);
     }
 
     // Clean old registry cache files
     let registry_cache = cargo_home.join("registry").join("cache");
     if registry_cache.exists() {
-        bytes_freed += clean_old_files(
+        let cache_stats = clean_old_files(
             config,
             &registry_cache,
             config.age_threshold_days(),
             verbose,
         )?;
+        stats.bytes_freed += cache_stats.bytes_freed;
+        stats.files_removed += cache_stats.files_removed;
     }
 
     // Clean old git checkouts
     let git_checkouts = cargo_home.join("git").join("checkouts");
     if git_checkouts.exists() {
-        bytes_freed += clean_old_directories(config, &git_checkouts, 30, verbose)?;
+        let git_stats = clean_old_directories(config, &git_checkouts, 30, verbose)?;
+        stats.bytes_freed += git_stats.bytes_freed;
+        stats.dirs_removed += git_stats.dirs_removed;
     }
 
     // Clean old git db entries
     let git_db = cargo_home.join("git").join("db");
     if git_db.exists() {
-        bytes_freed += clean_old_directories(config, &git_db, 30, verbose)?; // 30 days for git db
+        let git_stats = clean_old_directories(config, &git_db, 30, verbose)?;
+        stats.bytes_freed += git_stats.bytes_freed;
+        stats.dirs_removed += git_stats.dirs_removed;
     }
 
     // Clean old registry sources
     let registry_src = cargo_home.join("registry").join("src");
     if registry_src.exists() {
-        bytes_freed += clean_old_directories(config, &registry_src, 30, verbose)?;
+        let src_stats = clean_old_directories(config, &registry_src, 30, verbose)?;
+        stats.bytes_freed += src_stats.bytes_freed;
+        stats.dirs_removed += src_stats.dirs_removed;
         // 30 days for sources
     }
 
-    Ok(bytes_freed)
+    Ok(stats)
 }
 
 pub(crate) fn clean_cargo_bin_with_home(
@@ -145,7 +160,19 @@ pub(crate) fn clean_cargo_bin_with_home(
 }
 
 /// Clean old files in a directory using walkdir and rayon
-fn clean_old_files(config: &Gc, dir: &Path, age_threshold_days: u32, verbose: u8) -> Result<u64> {
+#[derive(Debug, Default)]
+struct CleanupStats {
+    bytes_freed: u64,
+    files_removed: usize,
+    dirs_removed: usize,
+}
+
+fn clean_old_files(
+    config: &Gc,
+    dir: &Path,
+    age_threshold_days: u32,
+    verbose: u8,
+) -> Result<CleanupStats> {
     let cutoff = age_cutoff(age_threshold_days);
 
     if !config.quiet() && verbose > 1 {
@@ -161,12 +188,16 @@ fn clean_old_files(config: &Gc, dir: &Path, age_threshold_days: u32, verbose: u8
         .collect();
 
     // Process files in parallel using rayon
-    let bytes_freed: u64 = files_to_check
+    let stats = files_to_check
         .par_iter()
         .map(|path| remove_file_if_older(config, path, cutoff))
-        .sum();
+        .reduce(CleanupStats::default, |mut acc, item| {
+            acc.bytes_freed += item.bytes_freed;
+            acc.files_removed += item.files_removed;
+            acc
+        });
 
-    Ok(bytes_freed)
+    Ok(stats)
 }
 
 /// Clean old directories
@@ -175,7 +206,7 @@ fn clean_old_directories(
     dir: &Path,
     age_threshold_days: u32,
     verbose: u8,
-) -> Result<u64> {
+) -> Result<CleanupStats> {
     let cutoff = age_cutoff(age_threshold_days);
 
     if !config.quiet() && verbose > 1 {
@@ -194,12 +225,16 @@ fn clean_old_directories(
         .collect();
 
     // Process directories in parallel
-    let bytes_freed: u64 = entries
+    let stats = entries
         .par_iter()
         .map(|path| remove_dir_if_older(config, path, cutoff))
-        .sum();
+        .reduce(CleanupStats::default, |mut acc, item| {
+            acc.bytes_freed += item.bytes_freed;
+            acc.dirs_removed += item.dirs_removed;
+            acc
+        });
 
-    Ok(bytes_freed)
+    Ok(stats)
 }
 
 fn age_cutoff(age_threshold_days: u32) -> SystemTime {
@@ -210,7 +245,7 @@ fn age_cutoff(age_threshold_days: u32) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
-fn remove_file_if_older(config: &Gc, path: &Path, cutoff: SystemTime) -> u64 {
+fn remove_file_if_older(config: &Gc, path: &Path, cutoff: SystemTime) -> CleanupStats {
     if let Ok(metadata) = fs::metadata(path)
         && let Ok(modified) = metadata.modified()
         && modified < cutoff
@@ -219,21 +254,29 @@ fn remove_file_if_older(config: &Gc, path: &Path, cutoff: SystemTime) -> u64 {
         if !config.dry_run() {
             let _ = fs::remove_file(path);
         }
-        return size;
+        return CleanupStats {
+            bytes_freed: size,
+            files_removed: 1,
+            dirs_removed: 0,
+        };
     }
-    0
+    CleanupStats::default()
 }
 
-fn remove_dir_if_older(config: &Gc, path: &Path, cutoff: SystemTime) -> u64 {
+fn remove_dir_if_older(config: &Gc, path: &Path, cutoff: SystemTime) -> CleanupStats {
     if let Ok(metadata) = fs::metadata(path)
         && let Ok(modified) = metadata.modified()
         && modified < cutoff
-        && let Ok(size) = calculate_directory_size(path)
+        && let Ok(size) = super::cleanup::calculate_directory_size(path)
     {
         if !config.dry_run() {
             let _ = fs::remove_dir_all(path);
         }
-        return size;
+        return CleanupStats {
+            bytes_freed: size,
+            files_removed: 0,
+            dirs_removed: 1,
+        };
     }
-    0
+    CleanupStats::default()
 }
