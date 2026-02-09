@@ -41,8 +41,8 @@ walkdir   = "2.5"
 assert_fs  = "1.1"
 filetime   = "0.2"
 predicates = "3.1"
-proptest   = "1.9"
-tempfile   = "3.24"
+proptest   = "1.10"
+tempfile   = "3.25"
 
 [profile.release]
 codegen-units = 1
