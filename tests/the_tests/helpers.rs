@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -181,12 +182,30 @@ pub fn run_cargo_command(
     args: &[&str],
     working_dir: &Path,
 ) -> miette::Result<std::process::Output> {
-    let output = Command::new("cargo")
+    let output = Command::new(cargo_executable())
         .args(args)
         .current_dir(working_dir)
         .output()
         .into_diagnostic()?;
     Ok(output)
+}
+
+fn cargo_executable() -> OsString {
+    if let Some(cargo) = std::env::var_os("CARGO") {
+        return cargo;
+    }
+
+    if let Ok(output) = Command::new("rustup").args(["which", "cargo"]).output()
+        && output.status.success()
+    {
+        let path = String::from_utf8_lossy(&output.stdout);
+        let path = path.trim();
+        if !path.is_empty() {
+            return OsString::from(path);
+        }
+    }
+
+    OsString::from("cargo")
 }
 
 /// Helper to run cargo-hold voyage command
