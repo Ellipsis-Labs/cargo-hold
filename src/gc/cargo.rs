@@ -21,22 +21,6 @@ pub(crate) fn clean_cargo_registry_with_home(
 ) -> Result<CargoRegistryStats> {
     let mut stats = CargoRegistryStats::default();
 
-    // Remove credentials
-    let credentials_file = cargo_home.join("credentials.toml");
-    if credentials_file.exists() {
-        if !config.quiet() && verbose > 0 {
-            eprintln!("Removing cargo credentials");
-        }
-        let size = fs::metadata(&credentials_file)
-            .map(|m| m.len())
-            .unwrap_or(0);
-        if !config.dry_run() {
-            let _ = fs::remove_file(&credentials_file);
-        }
-        stats.bytes_freed += size;
-        stats.files_removed = stats.files_removed.saturating_add(1);
-    }
-
     // Clean old registry cache files
     let registry_cache = cargo_home.join("registry").join("cache");
     if registry_cache.exists() {
