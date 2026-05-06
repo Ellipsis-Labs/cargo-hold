@@ -52,6 +52,31 @@ fn test_clean_cargo_registry_with_mock_home() {
 }
 
 #[test]
+fn test_clean_cargo_registry_preserves_credentials_toml() {
+    let home = TempHomeGuard::new();
+    let cargo_home = home.cargo_home();
+
+    let credentials = cargo_home.join("credentials.toml");
+    fs::write(&credentials, "[registry]\ntoken = \"do-not-delete\"\n").unwrap();
+
+    let config = Gc::builder()
+        .target_dir(home.home().join("target"))
+        .dry_run(false)
+        .debug(false)
+        .age_threshold_days(7)
+        .build();
+
+    config
+        .clean_cargo_registry_with_home(&cargo_home, 0)
+        .unwrap();
+
+    assert!(
+        credentials.exists(),
+        "cargo-hold must never delete ~/.cargo/credentials.toml; it stores private registry tokens"
+    );
+}
+
+#[test]
 fn test_clean_cargo_bin_with_mock_home() {
     // Create a temporary directory to act as cargo home
     let home = TempHomeGuard::new();
