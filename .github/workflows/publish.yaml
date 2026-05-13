@@ -6,11 +6,9 @@ on:
       - v*
 env:
   CARGO_TERM_COLOR: always
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 permissions:
-  contents: write
-  discussions: write
+  contents: read
 
 jobs:
   test:
@@ -40,10 +38,18 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     needs: [cross-build]
+    permissions:
+      contents: write
+      discussions: write
+      id-token: write
     steps:
       - uses: actions/checkout@v6
-      - run: echo ${{ secrets.CRATES_IO_TOKEN }} | cargo login
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
       - run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
