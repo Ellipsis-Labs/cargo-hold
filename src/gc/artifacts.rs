@@ -255,44 +255,65 @@ pub(crate) fn rejuvenate_stale_artifact_mtimes(
         return Ok(0);
     }
 
-    let matching = artifacts
+    if artifacts
         .iter()
-        .filter(|artifact| artifact.newest_mtime >= cutoff)
-        .count();
+        .any(|artifact| artifact.newest_mtime >= cutoff)
+    {
+        return Ok(0);
+    }
 
-    if matching > 0 {
+    let age_cutoff = SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(
+            age_threshold_days as u64 * 24 * 60 * 60,
+        ))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+
+    let refresh_time = SystemTime::now();
+    let mut files_touched = 0usize;
+    let mut crates_refreshed = 0usize;
+
+    for artifact in artifacts.iter_mut() {
+        // Only bump artifacts that look like a recent build with unreliable mtimes.
+        // Truly ancient crates stay old so age/size GC can still evict them.
+        if artifact.newest_mtime < cutoff && artifact.newest_mtime >= age_cutoff {
+            if dry_run {
+                files_touched += artifact
+                    .artifacts
+                    .iter()
+                    .filter(|info| info.path.is_file())
+                    .count();
+                artifact.newest_mtime = refresh_time;
+                crates_refreshed += 1;
+                continue;
+            }
+
+            let mut newest = SystemTime::UNIX_EPOCH;
+            for info in &mut artifact.artifacts {
+                if info.path.is_file() {
+                    set_file_mtime(&info.path, refresh_time)?;
+                    info._modified = refresh_time;
+                    files_touched += 1;
+                    if refresh_time > newest {
+                        newest = refresh_time;
+                    }
+                }
+            }
+            if newest > artifact.newest_mtime {
+                artifact.newest_mtime = newest;
+            }
+            crates_refreshed += 1;
+        }
+    }
+
+    if crates_refreshed == 0 {
         return Ok(0);
     }
 
     if !log.quiet() {
         eprintln!(
-            "  Restored cache has stale artifact mtimes (none newer than last heave); refreshing \
-             timestamps before GC"
+            "  Refreshed mtimes on {crates_refreshed} crate artifact(s) with stale cache \
+             timestamps"
         );
-    }
-
-    let refresh_time = SystemTime::now();
-    let mut files_touched = 0usize;
-
-    if dry_run {
-        return Ok(artifacts.iter().map(|a| a.artifacts.len()).sum());
-    }
-
-    for artifact in artifacts.iter_mut() {
-        let mut newest = SystemTime::UNIX_EPOCH;
-        for info in &mut artifact.artifacts {
-            if info.path.is_file() {
-                set_file_mtime(&info.path, refresh_time)?;
-                info._modified = refresh_time;
-                files_touched += 1;
-                if refresh_time > newest {
-                    newest = refresh_time;
-                }
-            }
-        }
-        if newest > artifact.newest_mtime {
-            artifact.newest_mtime = newest;
-        }
     }
 
     log.verbose(
