@@ -853,24 +853,23 @@ fn test_rejuvenate_stale_artifact_mtimes_enables_preservation() {
     let one_hour_ago = now.checked_sub(Duration::from_secs(3600)).unwrap();
     let one_day_ago = now.checked_sub(Duration::from_secs(24 * 3600)).unwrap();
 
-    let mut write_artifact =
-        |name: &str, hash: &str, size: u64, mtime: SystemTime| -> CrateArtifact {
-            let path = deps_dir.join(format!("lib{name}-{hash}.rlib"));
-            let mut file = fs::File::create(&path).unwrap();
-            file.write_all(&vec![0u8; size as usize]).unwrap();
-            set_file_mtime(&path, mtime).unwrap();
-            CrateArtifact {
-                name: name.to_string(),
-                hash: hash.to_string(),
-                artifacts: vec![ArtifactInfo {
-                    path,
-                    size,
-                    _modified: mtime,
-                }],
-                total_size: size,
-                newest_mtime: mtime,
-            }
-        };
+    let write_artifact = |name: &str, hash: &str, size: u64, mtime: SystemTime| -> CrateArtifact {
+        let path = deps_dir.join(format!("lib{name}-{hash}.rlib"));
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(&vec![0u8; size as usize]).unwrap();
+        set_file_mtime(&path, mtime).unwrap();
+        CrateArtifact {
+            name: name.to_string(),
+            hash: hash.to_string(),
+            artifacts: vec![ArtifactInfo {
+                path,
+                size,
+                _modified: mtime,
+            }],
+            total_size: size,
+            newest_mtime: mtime,
+        }
+    };
 
     let mut artifacts = vec![
         write_artifact("stale_recent", "2222222222222222", 4000, one_day_ago),

@@ -56,11 +56,10 @@ pub(crate) fn suggest_max_target_size(
         // If observed growth (based on finals) is within a deadband, hold the cap
         // steady.
         let observed_p90 = percentile(&final_growths, 90);
-        let growth_pct = if baseline == 0 {
-            0
-        } else {
-            observed_p90.saturating_mul(100) / baseline
-        };
+        let growth_pct = observed_p90
+            .saturating_mul(100)
+            .checked_div(baseline)
+            .unwrap_or(0);
 
         if observed_p90 == 0 {
             // No observed positive growth; hold steady when baseline is at/above the cap,

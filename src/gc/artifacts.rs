@@ -213,8 +213,7 @@ pub(crate) fn previous_build_preservation_cutoff(
         previous_mtime = now;
     }
 
-    let age_threshold =
-        std::time::Duration::from_secs(age_threshold_days as u64 * 24 * 60 * 60);
+    let age_threshold = std::time::Duration::from_secs(age_threshold_days as u64 * 24 * 60 * 60);
     let elapsed_since_previous = now
         .duration_since(previous_mtime)
         .unwrap_or(std::time::Duration::ZERO);
@@ -267,8 +266,8 @@ pub(crate) fn rejuvenate_stale_artifact_mtimes(
 
     if !log.quiet() {
         eprintln!(
-            "  Restored cache has stale artifact mtimes (none newer than last heave); \
-             refreshing timestamps before GC"
+            "  Restored cache has stale artifact mtimes (none newer than last heave); refreshing \
+             timestamps before GC"
         );
     }
 
@@ -389,7 +388,8 @@ fn preserve_previous_build_artifacts(
 
         log.verbose(
             1,
-            "  Skipping previous build preservation (no cutoff; age threshold 0 or last heave too old)",
+            "  Skipping previous build preservation (no cutoff; age threshold 0 or last heave too \
+             old)",
         );
     }
 

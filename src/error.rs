@@ -220,14 +220,13 @@ pub enum HoldError {
         String,
     ),
 
-    /// One or more tracked files could not be hashed or read during stow/salvage.
+    /// One or more tracked files could not be hashed or read during
+    /// stow/salvage.
     ///
     /// The command stops instead of writing partial metadata or restoring
-    /// timestamps for only a subset of files, which would make CI report success
-    /// while incremental compilation state is wrong.
-    #[error(
-        "failed to process {failed} of {total} tracked file(s); run with -v for details"
-    )]
+    /// timestamps for only a subset of files, which would make CI report
+    /// success while incremental compilation state is wrong.
+    #[error("failed to process {failed} of {total} tracked file(s); run with -v for details")]
     #[diagnostic(
         code(cargo_hold::files::partial_failure),
         help("Fix file permissions or paths, then re-run the command.")

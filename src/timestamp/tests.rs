@@ -4,11 +4,11 @@ use std::time::{Duration, SystemTime};
 
 use tempfile::TempDir;
 
-use crate::state::{FileState, StateMetadata};
 use crate::error::HoldError;
+use crate::state::{FileState, StateMetadata};
 use crate::timestamp::{
-    generate_monotonic_timestamp, restore_timestamps, set_file_mtime, validate_repo_relative_path,
-    system_time_to_nanos,
+    generate_monotonic_timestamp, restore_timestamps, set_file_mtime, system_time_to_nanos,
+    validate_repo_relative_path,
 };
 
 #[test]
