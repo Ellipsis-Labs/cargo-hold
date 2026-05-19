@@ -35,6 +35,32 @@ pub fn saturating_system_time_from_nanos(nanos: u128) -> (SystemTime, bool) {
 use crate::error::{HoldError, Result};
 use crate::state::{FileState, StateMetadata};
 
+/// Reject paths that escape the repository root via `..` or absolute segments.
+pub fn validate_repo_relative_path(path: &Path) -> Result<()> {
+    if path.is_absolute() {
+        return Err(HoldError::InvalidPath {
+            message: format!("absolute path not allowed in metadata: {}", path.display()),
+        });
+    }
+
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(HoldError::InvalidPath {
+            message: format!("path escapes repository root: {}", path.display()),
+        });
+    }
+
+    Ok(())
+}
+
+/// Join a repository-relative path to the repo root after validation.
+pub fn repo_relative_path(repo_root: &Path, relative: &Path) -> Result<std::path::PathBuf> {
+    validate_repo_relative_path(relative)?;
+    Ok(repo_root.join(relative))
+}
+
 /// Convert nanoseconds since UNIX_EPOCH to SystemTime
 fn nanos_to_system_time(nanos: u128) -> SystemTime {
     saturating_system_time_from_nanos(nanos).0
@@ -155,6 +181,7 @@ pub fn restore_timestamps(
 ) -> Result<()> {
     // Restore original timestamps for unchanged files
     for file_state in unchanged_files {
+        validate_repo_relative_path(&file_state.path)?;
         let mtime = nanos_to_system_time(file_state.mtime_nanos);
         let full_path = repo_root.join(&file_state.path);
         set_file_mtime(&full_path, mtime)?;
@@ -162,13 +189,13 @@ pub fn restore_timestamps(
 
     // Set new timestamp for modified files
     for path in modified_files {
-        let full_path = repo_root.join(path);
+        let full_path = repo_relative_path(repo_root, path)?;
         set_file_mtime(&full_path, new_mtime)?;
     }
 
     // Set new timestamp for added files
     for path in added_files {
-        let full_path = repo_root.join(path);
+        let full_path = repo_relative_path(repo_root, path)?;
         set_file_mtime(&full_path, new_mtime)?;
     }
 

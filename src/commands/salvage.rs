@@ -137,11 +137,17 @@ fn analyze_files(
         }
     }
 
-    if !errors.is_empty() && !log.quiet() {
-        eprintln!("Warning: Failed to analyze {} file(s)", errors.len());
-        if log.level() == 0 {
-            eprintln!("Run with -v for more details");
+    if !errors.is_empty() {
+        if !log.quiet() {
+            eprintln!("Warning: Failed to analyze {} file(s)", errors.len());
+            if log.level() == 0 {
+                eprintln!("Run with -v for more details");
+            }
         }
+        return Err(crate::error::HoldError::PartialFileProcessing {
+            failed: errors.len(),
+            total: tracked_files.len(),
+        });
     }
 
     Ok((unchanged, modified, added))

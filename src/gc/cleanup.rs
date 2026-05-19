@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::artifacts::{
-    collect_crate_artifacts, remove_crate_artifacts, select_artifacts_for_removal,
+    collect_crate_artifacts, rejuvenate_stale_artifact_mtimes, remove_crate_artifacts,
+    select_artifacts_for_removal,
 };
 use super::config::{Gc, GcStats};
 use super::size::format_size;
@@ -99,12 +100,21 @@ pub(crate) fn clean_profile_directory(
     }
 
     // Collect and analyze crate artifacts
-    let crate_artifacts = collect_crate_artifacts(profile_dir)?;
+    let mut crate_artifacts = collect_crate_artifacts(profile_dir)?;
 
     log.verbose(
         2,
         format!("  Found {} crate artifacts", crate_artifacts.len()),
     );
+
+    rejuvenate_stale_artifact_mtimes(
+        &mut crate_artifacts,
+        config.previous_build_mtime_nanos(),
+        config.age_threshold_days(),
+        config.dry_run(),
+        verbose,
+        config.quiet(),
+    )?;
 
     // Determine which crates to remove using combined logic
     // Calculate the current total size (initial - already freed globally)

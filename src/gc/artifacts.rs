@@ -9,7 +9,7 @@ use regex::Regex;
 use super::size::format_size;
 use crate::error::{HoldError, Result};
 use crate::logging::Logger;
-use crate::timestamp::saturating_duration_from_nanos;
+use crate::timestamp::{saturating_duration_from_nanos, set_file_mtime};
 
 /// Information about a single artifact
 #[derive(Debug, Clone)]
@@ -188,6 +188,122 @@ fn add_artifact_file(path: &Path, crate_artifact: &mut CrateArtifact) -> Result<
     Ok(())
 }
 
+/// Cutoff used to decide whether an artifact belongs to the previous CI build.
+///
+/// Returns `None` when previous-build preservation should be skipped entirely.
+pub(crate) fn previous_build_preservation_cutoff(
+    previous_build_mtime_nanos: Option<u128>,
+    age_threshold_days: u32,
+) -> Option<SystemTime> {
+    let previous_mtime_nanos = previous_build_mtime_nanos?;
+    if age_threshold_days == 0 {
+        return None;
+    }
+
+    let (duration, saturated) = saturating_duration_from_nanos(previous_mtime_nanos);
+    if saturated {
+        eprintln!(
+            "Warning: previous_build_mtime_nanos ({previous_mtime_nanos}) exceeds representable \
+             range; clamping to ~year 2554."
+        );
+    }
+    let mut previous_mtime = SystemTime::UNIX_EPOCH + duration;
+    let now = SystemTime::now();
+    if previous_mtime > now {
+        previous_mtime = now;
+    }
+
+    let age_threshold =
+        std::time::Duration::from_secs(age_threshold_days as u64 * 24 * 60 * 60);
+    let elapsed_since_previous = now
+        .duration_since(previous_mtime)
+        .unwrap_or(std::time::Duration::ZERO);
+
+    if elapsed_since_previous > age_threshold {
+        return None;
+    }
+
+    let buffer = std::time::Duration::from_secs(5 * 60);
+    Some(
+        previous_mtime
+            .checked_sub(buffer)
+            .unwrap_or(SystemTime::UNIX_EPOCH),
+    )
+}
+
+/// Refresh artifact mtimes when a restored CI cache has filesystem times older
+/// than the last `heave` run.
+///
+/// GitHub Actions and similar caches often unpack with stale mtimes. Without
+/// this pass, `heave` treats every artifact as ancient and deletes the cache
+/// you just restored.
+pub(crate) fn rejuvenate_stale_artifact_mtimes(
+    artifacts: &mut [CrateArtifact],
+    previous_build_mtime_nanos: Option<u128>,
+    age_threshold_days: u32,
+    dry_run: bool,
+    verbose: u8,
+    quiet: bool,
+) -> Result<usize> {
+    let log = Logger::new(verbose, quiet);
+    let Some(cutoff) =
+        previous_build_preservation_cutoff(previous_build_mtime_nanos, age_threshold_days)
+    else {
+        return Ok(0);
+    };
+
+    if artifacts.is_empty() {
+        return Ok(0);
+    }
+
+    let matching = artifacts
+        .iter()
+        .filter(|artifact| artifact.newest_mtime >= cutoff)
+        .count();
+
+    if matching > 0 {
+        return Ok(0);
+    }
+
+    if !log.quiet() {
+        eprintln!(
+            "  Restored cache has stale artifact mtimes (none newer than last heave); \
+             refreshing timestamps before GC"
+        );
+    }
+
+    let refresh_time = SystemTime::now();
+    let mut files_touched = 0usize;
+
+    if dry_run {
+        return Ok(artifacts.iter().map(|a| a.artifacts.len()).sum());
+    }
+
+    for artifact in artifacts.iter_mut() {
+        let mut newest = SystemTime::UNIX_EPOCH;
+        for info in &mut artifact.artifacts {
+            if info.path.is_file() {
+                set_file_mtime(&info.path, refresh_time)?;
+                info._modified = refresh_time;
+                files_touched += 1;
+                if refresh_time > newest {
+                    newest = refresh_time;
+                }
+            }
+        }
+        if newest > artifact.newest_mtime {
+            artifact.newest_mtime = newest;
+        }
+    }
+
+    log.verbose(
+        1,
+        format!("  Refreshed mtimes on {files_touched} artifact file(s)"),
+    );
+
+    Ok(files_touched)
+}
+
 /// Select artifacts to remove based on both size and age constraints
 ///
 /// This function implements a two-phase cleanup strategy:
@@ -247,71 +363,34 @@ fn preserve_previous_build_artifacts(
 ) -> Vec<&CrateArtifact> {
     let log = Logger::new(verbose, quiet);
     if let Some(previous_mtime_nanos) = previous_build_mtime_nanos {
-        let (duration, saturated) = saturating_duration_from_nanos(previous_mtime_nanos);
-        if saturated && !log.quiet() {
-            eprintln!(
-                "Warning: previous_build_mtime_nanos ({previous_mtime_nanos}) exceeds \
-                 representable range; clamping to ~year 2554.",
-            );
-        }
+        if let Some(cutoff_time) =
+            previous_build_preservation_cutoff(Some(previous_mtime_nanos), age_threshold_days)
+        {
+            let (preserved, eligible): (Vec<_>, Vec<_>) = artifacts
+                .into_iter()
+                .partition(|artifact| artifact.newest_mtime >= cutoff_time);
 
-        let mut previous_mtime = SystemTime::UNIX_EPOCH + duration;
-        let now = SystemTime::now();
-        if previous_mtime > now {
-            previous_mtime = now;
-        }
-
-        if age_threshold_days == 0 {
-            log.verbose(
-                2,
-                "  Skipping previous build preservation because age threshold is 0 days",
-            );
-            return artifacts;
-        }
-
-        let age_threshold =
-            std::time::Duration::from_secs(age_threshold_days as u64 * 24 * 60 * 60);
-        let elapsed_since_previous = now
-            .duration_since(previous_mtime)
-            .unwrap_or(std::time::Duration::ZERO);
-
-        if elapsed_since_previous > age_threshold {
-            log.verbose(
-                1,
-                format!(
-                    "  Previous build timestamp is {elapsed_since_previous:?} old; exceeding \
-                     threshold, skipping preservation"
-                ),
-            );
-            return artifacts;
-        }
-
-        // Add a generous buffer to account for clock drift and build finishing before
-        // GC.
-        let buffer = std::time::Duration::from_secs(5 * 60);
-        let cutoff_time = previous_mtime
-            .checked_sub(buffer)
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-
-        let (preserved, eligible): (Vec<_>, Vec<_>) = artifacts
-            .into_iter()
-            .partition(|artifact| artifact.newest_mtime >= cutoff_time);
-
-        if !log.quiet() && !preserved.is_empty() {
-            let preserved_size: u64 = preserved.iter().map(|a| a.total_size).sum();
-            eprintln!(
-                "  Preserving {} artifacts ({}) from previous build",
-                preserved.len(),
-                format_size(preserved_size)
-            );
-            if log.level() > 1 {
-                for artifact in &preserved {
-                    eprintln!("    Preserving: {}-{}", artifact.name, artifact.hash);
+            if !log.quiet() && !preserved.is_empty() {
+                let preserved_size: u64 = preserved.iter().map(|a| a.total_size).sum();
+                eprintln!(
+                    "  Preserving {} artifacts ({}) from previous build",
+                    preserved.len(),
+                    format_size(preserved_size)
+                );
+                if log.level() > 1 {
+                    for artifact in &preserved {
+                        eprintln!("    Preserving: {}-{}", artifact.name, artifact.hash);
+                    }
                 }
             }
+
+            return eligible;
         }
 
-        return eligible;
+        log.verbose(
+            1,
+            "  Skipping previous build preservation (no cutoff; age threshold 0 or last heave too old)",
+        );
     }
 
     artifacts

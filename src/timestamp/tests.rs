@@ -1,12 +1,14 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use tempfile::TempDir;
 
 use crate::state::{FileState, StateMetadata};
+use crate::error::HoldError;
 use crate::timestamp::{
-    generate_monotonic_timestamp, restore_timestamps, set_file_mtime, system_time_to_nanos,
+    generate_monotonic_timestamp, restore_timestamps, set_file_mtime, validate_repo_relative_path,
+    system_time_to_nanos,
 };
 
 #[test]
@@ -143,4 +145,17 @@ fn test_set_mtime_read_only_file() {
 
     let result = set_file_mtime(&test_file, SystemTime::now());
     assert!(matches!(result, Err(HoldError::SetTimestampError { .. })));
+}
+
+#[test]
+fn test_validate_repo_relative_path_rejects_escape() {
+    assert!(validate_repo_relative_path(Path::new("src/lib.rs")).is_ok());
+    assert!(matches!(
+        validate_repo_relative_path(Path::new("../etc/passwd")),
+        Err(HoldError::InvalidPath { .. })
+    ));
+    assert!(matches!(
+        validate_repo_relative_path(Path::new("/etc/passwd")),
+        Err(HoldError::InvalidPath { .. })
+    ));
 }
