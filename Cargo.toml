@@ -27,7 +27,7 @@ path = "src/lib.rs"
 [dependencies]
 blake3    = { version = "1.8.5", features = ["rayon", "mmap"] }
 clap      = { version = "4.6.1", features = ["derive", "cargo", "env"] }
-git2      = "0.20.4"
+git2      = "0.21.0"
 home      = "0.5.12"
 memmap2   = "0.9.10"
 miette    = { version = "7.6.0", features = ["fancy"] }
@@ -39,7 +39,7 @@ walkdir   = "2.5.0"
 
 [dev-dependencies]
 assert_fs  = "1.1.3"
-filetime   = "0.2.28"
+filetime   = "0.2.29"
 predicates = "3.1.4"
 proptest   = "1.11.0"
 tempfile   = "3.27.0"
