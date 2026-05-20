@@ -9,8 +9,7 @@ env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 permissions:
-  contents: write
-  discussions: write
+  contents: read
 
 jobs:
   test:
@@ -40,6 +39,11 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     needs: [cross-build]
+    permissions:
+      contents: write
+      discussions: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v6
       - run: echo ${{ secrets.CRATES_IO_TOKEN }} | cargo login
@@ -100,6 +104,11 @@ jobs:
           # List all created files
           echo "Release assets:"
           ls -la *.tar.gz cargo-hold-checksums-sha256.txt
+
+      - name: Generate artifact attestation
+        uses: actions/attest@v4
+        with:
+          subject-path: artifacts/*.tar.gz
 
       - name: Create Release
         id: create_release
