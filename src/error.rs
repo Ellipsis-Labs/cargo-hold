@@ -220,6 +220,24 @@ pub enum HoldError {
         String,
     ),
 
+    /// One or more tracked files could not be hashed or read during
+    /// stow/salvage.
+    ///
+    /// The command stops instead of writing partial metadata or restoring
+    /// timestamps for only a subset of files, which would make CI report
+    /// success while incremental compilation state is wrong.
+    #[error("failed to process {failed} of {total} tracked file(s); run with -v for details")]
+    #[diagnostic(
+        code(cargo_hold::files::partial_failure),
+        help("Fix file permissions or paths, then re-run the command.")
+    )]
+    PartialFileProcessing {
+        /// Number of files that failed
+        failed: usize,
+        /// Total tracked files attempted
+        total: usize,
+    },
+
     /// PathBuf cannot be converted to UTF-8 string for storage.
     ///
     /// Raised in StateMetadata operations when a PathBuf contains

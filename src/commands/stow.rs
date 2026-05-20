@@ -56,11 +56,17 @@ pub fn stow(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) 
         }
     }
 
-    if errors > 0 && !log.quiet() {
-        eprintln!("Warning: Failed to analyze {errors} file(s)");
-        if log.level() == 0 {
-            eprintln!("Run with -v for more details");
+    if errors > 0 {
+        if !log.quiet() {
+            eprintln!("Warning: Failed to analyze {errors} file(s)");
+            if log.level() == 0 {
+                eprintln!("Run with -v for more details");
+            }
         }
+        return Err(HoldError::PartialFileProcessing {
+            failed: errors,
+            total: tracked_files.len(),
+        });
     }
 
     let existing_metadata = match load_metadata(metadata_path) {

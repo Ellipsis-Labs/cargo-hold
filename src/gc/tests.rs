@@ -4,7 +4,8 @@ use std::time::{Duration, SystemTime};
 use proptest::prelude::*;
 
 use super::artifacts::{
-    ArtifactInfo, CrateArtifact, parse_crate_artifact_name, select_artifacts_for_removal,
+    ArtifactInfo, CrateArtifact, parse_crate_artifact_name, rejuvenate_stale_artifact_mtimes,
+    select_artifacts_for_removal,
 };
 use super::size::{format_size, parse_size};
 
@@ -833,4 +834,94 @@ fn test_size_cleanup_after_previous_build_expires() {
     assert!(!evicted.is_empty());
     let freed: u64 = evicted.iter().map(|a| a.total_size).sum();
     assert!(freed >= current_size - cap);
+}
+
+#[test]
+fn test_rejuvenate_stale_artifact_mtimes_enables_preservation() {
+    use std::fs;
+    use std::io::Write;
+
+    use tempfile::TempDir;
+
+    use crate::timestamp::set_file_mtime;
+
+    let temp_dir = TempDir::new().unwrap();
+    let deps_dir = temp_dir.path().join("deps");
+    fs::create_dir_all(&deps_dir).unwrap();
+
+    let now = SystemTime::now();
+    let one_hour_ago = now.checked_sub(Duration::from_secs(3600)).unwrap();
+    let one_day_ago = now.checked_sub(Duration::from_secs(24 * 3600)).unwrap();
+    let forty_days_ago = now
+        .checked_sub(Duration::from_secs(40 * 24 * 3600))
+        .unwrap();
+
+    let write_artifact = |name: &str, hash: &str, size: u64, mtime: SystemTime| -> CrateArtifact {
+        let path = deps_dir.join(format!("lib{name}-{hash}.rlib"));
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(&vec![0u8; size as usize]).unwrap();
+        set_file_mtime(&path, mtime).unwrap();
+        CrateArtifact {
+            name: name.to_string(),
+            hash: hash.to_string(),
+            artifacts: vec![ArtifactInfo {
+                path,
+                size,
+                _modified: mtime,
+            }],
+            total_size: size,
+            newest_mtime: mtime,
+        }
+    };
+
+    let mut artifacts = vec![
+        write_artifact("stale_recent", "2222222222222222", 4000, one_day_ago),
+        write_artifact("stale_recent2", "3333333333333333", 3000, one_day_ago),
+        write_artifact("old_artifact", "1111111111111111", 5000, forty_days_ago),
+    ];
+
+    let previous_build_nanos = one_hour_ago
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    let before = select_artifacts_for_removal(
+        &artifacts,
+        14000,
+        Some(6000),
+        30,
+        Some(previous_build_nanos),
+        0,
+        true,
+    );
+    assert!(
+        before.iter().any(|a| a.name.starts_with("stale_")),
+        "stale cache mtimes should be selected for removal before rejuvenation"
+    );
+
+    rejuvenate_stale_artifact_mtimes(
+        &mut artifacts,
+        Some(previous_build_nanos),
+        30,
+        false,
+        0,
+        true,
+    )
+    .unwrap();
+
+    let after = select_artifacts_for_removal(
+        &artifacts,
+        14000,
+        Some(6000),
+        30,
+        Some(previous_build_nanos),
+        0,
+        true,
+    );
+    assert!(
+        !after.iter().any(|a| a.name.starts_with("stale_")),
+        "refreshed mtimes should be preserved as previous-build artifacts"
+    );
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].name, "old_artifact");
 }
