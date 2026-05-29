@@ -107,14 +107,16 @@ pub(crate) fn clean_profile_directory(
         format!("  Found {} crate artifacts", crate_artifacts.len()),
     );
 
-    rejuvenate_stale_artifact_mtimes(
-        &mut crate_artifacts,
-        config.previous_build_mtime_nanos(),
-        config.age_threshold_days(),
-        config.dry_run(),
-        verbose,
-        config.quiet(),
-    )?;
+    if config.rejuvenate_artifact_mtimes() {
+        rejuvenate_stale_artifact_mtimes(
+            &mut crate_artifacts,
+            config.previous_build_mtime_nanos(),
+            config.age_threshold_days(),
+            config.dry_run(),
+            verbose,
+            config.quiet(),
+        )?;
+    }
 
     // Determine which crates to remove using combined logic
     // Calculate the current total size (initial - already freed globally)

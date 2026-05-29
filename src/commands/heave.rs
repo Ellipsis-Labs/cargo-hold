@@ -13,10 +13,12 @@ use crate::state::{CapTrace, StateMetadata};
 
 pub struct Heave<'a> {
     gc: GcOptions<'a>,
+    rejuvenate_artifact_mtimes: bool,
 }
 
 pub struct HeaveBuilder<'a> {
     gc: GcOptionsBuilder<'a>,
+    rejuvenate_artifact_mtimes: bool,
 }
 
 impl<'a> Default for HeaveBuilder<'a> {
@@ -29,6 +31,7 @@ impl<'a> HeaveBuilder<'a> {
     pub fn new() -> Self {
         Self {
             gc: GcOptionsBuilder::new(),
+            rejuvenate_artifact_mtimes: true,
         }
     }
 
@@ -82,9 +85,15 @@ impl<'a> HeaveBuilder<'a> {
         self
     }
 
+    pub(crate) fn rejuvenate_artifact_mtimes(mut self, enabled: bool) -> Self {
+        self.rejuvenate_artifact_mtimes = enabled;
+        self
+    }
+
     pub fn build(self) -> Result<Heave<'a>> {
         Ok(Heave {
             gc: self.gc.build()?,
+            rejuvenate_artifact_mtimes: self.rejuvenate_artifact_mtimes,
         })
     }
 }
@@ -174,6 +183,7 @@ impl<'a> Heave<'a> {
             .debug(self.gc.debug() || self.gc.verbose() >= 2)
             .age_threshold_days(self.gc.age_threshold_days())
             .preserve_binaries(self.gc.preserve_cargo_binaries().to_vec())
+            .rejuvenate_artifact_mtimes(self.rejuvenate_artifact_mtimes)
             .quiet(self.gc.quiet());
 
         if let Some(size) = max_size {

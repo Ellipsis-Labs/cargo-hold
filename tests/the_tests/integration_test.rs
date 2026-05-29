@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
@@ -908,6 +908,87 @@ fn test_heave_preserves_recent_artifact_after_delayed_stow() {
         invoked.exists(),
         "Fingerprint files should remain after heave"
     );
+}
+
+#[test]
+fn test_voyage_does_not_rejuvenate_stale_artifacts_when_sources_changed() {
+    let temp_dir = setup_cargo_project();
+
+    execute_command(Commands::Stow, &temp_dir, 0).unwrap();
+    record_gc_timestamp(&temp_dir, 30);
+
+    let artifact_time = SystemTime::now()
+        .checked_sub(Duration::from_secs(24 * 60 * 60))
+        .unwrap();
+    let artifact =
+        write_stale_crate_artifact(&temp_dir, "stale", "1234567890abcd12", artifact_time);
+    let artifact_mtime_before_voyage = fs::metadata(&artifact).unwrap().modified().unwrap();
+
+    modify_main_rs(&temp_dir, "changed before voyage");
+    execute_command(voyage_command(30), &temp_dir, 1).unwrap();
+
+    let final_mtime = fs::metadata(&artifact).unwrap().modified().unwrap();
+    assert_eq!(
+        final_mtime, artifact_mtime_before_voyage,
+        "voyage must not refresh stale artifact mtimes when source files changed"
+    );
+}
+
+fn record_gc_timestamp(temp_dir: &assert_fs::TempDir, age_threshold_days: u32) {
+    let command = Commands::Heave {
+        gc: GcArgs::new(None, vec![]),
+        dry_run: false,
+        debug: false,
+        age_threshold_days,
+        auto_max_target_size: true,
+    };
+    execute_command(command, temp_dir, 0).unwrap();
+}
+
+fn write_stale_crate_artifact(
+    temp_dir: &assert_fs::TempDir,
+    name: &str,
+    hash: &str,
+    mtime: SystemTime,
+) -> PathBuf {
+    let debug_dir = temp_dir.path().join("target/debug");
+    let deps_dir = debug_dir.join("deps");
+    fs::create_dir_all(&deps_dir).unwrap();
+
+    let artifact = deps_dir.join(format!("lib{name}-{hash}.rlib"));
+    fs::write(&artifact, vec![0u8; 4096]).unwrap();
+
+    let fingerprint = debug_dir.join(format!(".fingerprint/lib{name}-{hash}"));
+    fs::create_dir_all(&fingerprint).unwrap();
+
+    let filetime = filetime::FileTime::from_system_time(mtime);
+    filetime::set_file_mtime(&artifact, filetime).unwrap();
+    filetime::set_file_mtime(&fingerprint, filetime).unwrap();
+
+    artifact
+}
+
+fn modify_main_rs(temp_dir: &assert_fs::TempDir, message: &str) {
+    fs::write(
+        temp_dir.path().join("src/main.rs"),
+        format!(
+            r#"fn main() {{
+    println!("{message}");
+}}
+"#
+        ),
+    )
+    .unwrap();
+}
+
+fn voyage_command(age_threshold_days: u32) -> Commands {
+    Commands::Voyage {
+        gc: GcArgs::new(None, vec![]),
+        gc_dry_run: false,
+        gc_debug: false,
+        gc_age_threshold_days: age_threshold_days,
+        gc_auto_max_target_size: true,
+    }
 }
 
 #[test]

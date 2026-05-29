@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use super::salvage::salvage;
+use super::salvage::{SalvageReport, salvage_with_report};
 use super::stow::stow;
 use crate::error::Result;
 use crate::logging::Logger;
@@ -15,13 +15,22 @@ use crate::logging::Logger;
 ///
 /// This is the recommended command for CI use.
 pub fn anchor(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) -> Result<()> {
+    anchor_with_report(metadata_path, verbose, quiet, working_dir).map(|_| ())
+}
+
+pub(crate) fn anchor_with_report(
+    metadata_path: &Path,
+    verbose: u8,
+    quiet: bool,
+    working_dir: &Path,
+) -> Result<SalvageReport> {
     let log = Logger::new(verbose, quiet);
     log.info("⚓ Anchoring build state...");
 
-    salvage(metadata_path, verbose, quiet, working_dir)?;
+    let report = salvage_with_report(metadata_path, verbose, quiet, working_dir)?;
     stow(metadata_path, verbose, quiet, working_dir)?;
 
     log.info("⚓ Build state anchored successfully");
 
-    Ok(())
+    Ok(report)
 }

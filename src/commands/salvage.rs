@@ -12,11 +12,33 @@ use crate::metadata::load_metadata;
 use crate::state::{FileState, StateMetadata};
 use crate::timestamp::{generate_monotonic_timestamp, restore_timestamps};
 
+#[derive(Debug, Default)]
+pub(crate) struct SalvageReport {
+    pub(crate) unchanged_files: usize,
+    pub(crate) modified_files: usize,
+    pub(crate) added_files: usize,
+}
+
+impl SalvageReport {
+    pub(crate) fn has_source_changes(&self) -> bool {
+        self.modified_files > 0 || self.added_files > 0
+    }
+}
+
 /// Executes the salvage command.
 ///
 /// Restores timestamps based on metadata content, assigning monotonic
 /// timestamps to new or modified files.
 pub fn salvage(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Path) -> Result<()> {
+    salvage_with_report(metadata_path, verbose, quiet, working_dir).map(|_| ())
+}
+
+pub(crate) fn salvage_with_report(
+    metadata_path: &Path,
+    verbose: u8,
+    quiet: bool,
+    working_dir: &Path,
+) -> Result<SalvageReport> {
     let log = Logger::new(verbose, quiet);
     log.verbose(1, "Salvaging timestamps from metadata...");
 
@@ -24,7 +46,7 @@ pub fn salvage(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Pat
 
     if metadata.is_empty() {
         log.verbose(1, "Metadata is empty, nothing to restore");
-        return Ok(());
+        return Ok(SalvageReport::default());
     }
 
     if !log.quiet() && log.level() > 0 {
@@ -114,7 +136,11 @@ pub fn salvage(metadata_path: &Path, verbose: u8, quiet: bool, working_dir: &Pat
         eprintln!("  New files (new timestamp applied): {}", added.len());
     }
 
-    Ok(())
+    Ok(SalvageReport {
+        unchanged_files: unchanged.len(),
+        modified_files: modified.len(),
+        added_files: added.len(),
+    })
 }
 
 /// Analyze files to categorize them as unchanged, modified, or added.

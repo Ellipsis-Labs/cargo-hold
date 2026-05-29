@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::commands::anchor::anchor;
+use crate::commands::anchor::anchor_with_report;
 use crate::commands::gc_options::{GcOptions, GcOptionsBuilder};
 use crate::commands::heave::Heave;
 use crate::error::{HoldError, Result};
@@ -28,14 +28,37 @@ impl<'a> Voyage<'a> {
         let log = Logger::new(self.gc.verbose(), self.gc.quiet());
         log.info("🚢 Setting sail on voyage (anchor + heave)...");
 
-        anchor(
-            self.gc
-                .metadata_path()
-                .ok_or_else(|| HoldError::ConfigError("metadata_path is required".to_string()))?,
+        let metadata_path = self
+            .gc
+            .metadata_path()
+            .ok_or_else(|| HoldError::ConfigError("metadata_path is required".to_string()))?;
+
+        let anchor_report = anchor_with_report(
+            metadata_path,
             self.gc.verbose(),
             self.gc.quiet(),
             self.working_dir,
         )?;
+        let source_changed = anchor_report.has_source_changes();
+
+        if source_changed {
+            log.verbose(
+                1,
+                format!(
+                    "Source changes detected ({} modified, {} added); skipping artifact mtime \
+                     refresh before build",
+                    anchor_report.modified_files, anchor_report.added_files
+                ),
+            );
+        } else {
+            log.verbose(
+                2,
+                format!(
+                    "No source changes detected across {} unchanged files",
+                    anchor_report.unchanged_files
+                ),
+            );
+        }
 
         log.info("🧹 Starting garbage collection...");
 
@@ -48,11 +71,8 @@ impl<'a> Voyage<'a> {
             .preserve_cargo_binaries(self.gc.preserve_cargo_binaries())
             .age_threshold_days(self.gc.age_threshold_days())
             .verbose(self.gc.verbose())
-            .metadata_path(
-                self.gc.metadata_path().ok_or_else(|| {
-                    HoldError::ConfigError("metadata_path is required".to_string())
-                })?,
-            )
+            .metadata_path(metadata_path)
+            .rejuvenate_artifact_mtimes(!source_changed)
             .quiet(self.gc.quiet())
             .build()?
             .heave()?;

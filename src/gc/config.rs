@@ -26,6 +26,9 @@ pub struct Gc {
     preserve_binaries: Vec<String>,
     /// Timestamp of the previous build to preserve artifacts from
     previous_build_mtime_nanos: Option<u128>,
+    /// Refresh restored artifact mtimes before applying previous-build
+    /// preservation
+    rejuvenate_artifact_mtimes: bool,
     /// Suppress informational logging when true
     quiet: bool,
 }
@@ -69,6 +72,11 @@ impl Gc {
     /// Get the previous build mtime in nanoseconds
     pub fn previous_build_mtime_nanos(&self) -> Option<u128> {
         self.previous_build_mtime_nanos
+    }
+
+    /// Check whether stale restored artifact mtimes should be refreshed.
+    pub fn rejuvenate_artifact_mtimes(&self) -> bool {
+        self.rejuvenate_artifact_mtimes
     }
 
     /// Check if quiet mode is enabled
@@ -255,13 +263,14 @@ impl Default for Gc {
             age_threshold_days: 7,
             preserve_binaries: Vec::new(),
             previous_build_mtime_nanos: None,
+            rejuvenate_artifact_mtimes: true,
             quiet: false,
         }
     }
 }
 
 /// Builder for [`Gc`]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GcBuilder {
     target_dir: Option<PathBuf>,
     max_target_size: Option<u64>,
@@ -270,7 +279,24 @@ pub struct GcBuilder {
     age_threshold_days: Option<u32>,
     preserve_binaries: Vec<String>,
     previous_build_mtime_nanos: Option<u128>,
+    rejuvenate_artifact_mtimes: bool,
     quiet: bool,
+}
+
+impl Default for GcBuilder {
+    fn default() -> Self {
+        Self {
+            target_dir: None,
+            max_target_size: None,
+            dry_run: false,
+            debug: false,
+            age_threshold_days: None,
+            preserve_binaries: Vec::new(),
+            previous_build_mtime_nanos: None,
+            rejuvenate_artifact_mtimes: true,
+            quiet: false,
+        }
+    }
 }
 
 impl GcBuilder {
@@ -322,6 +348,12 @@ impl GcBuilder {
         self
     }
 
+    /// Enable or disable artifact mtime rejuvenation.
+    pub fn rejuvenate_artifact_mtimes(mut self, enabled: bool) -> Self {
+        self.rejuvenate_artifact_mtimes = enabled;
+        self
+    }
+
     /// Enable or disable quiet mode
     pub fn quiet(mut self, quiet: bool) -> Self {
         self.quiet = quiet;
@@ -338,6 +370,7 @@ impl GcBuilder {
             age_threshold_days: self.age_threshold_days.unwrap_or(7),
             preserve_binaries: self.preserve_binaries,
             previous_build_mtime_nanos: self.previous_build_mtime_nanos,
+            rejuvenate_artifact_mtimes: self.rejuvenate_artifact_mtimes,
             quiet: self.quiet,
         }
     }
