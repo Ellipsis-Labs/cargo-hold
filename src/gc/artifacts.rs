@@ -17,6 +17,7 @@ pub(crate) struct ArtifactInfo {
     pub(crate) path: PathBuf,
     pub(crate) size: u64,
     pub(crate) _modified: SystemTime,
+    pub(crate) is_regular_file: bool,
 }
 
 /// A crate artifact group (all related files for a single crate)
@@ -127,9 +128,10 @@ pub(crate) fn parse_crate_artifact_name(path: &Path) -> Option<(String, String)>
 
 /// Add artifact files to a crate artifact
 fn add_artifact_files(path: &Path, crate_artifact: &mut CrateArtifact) -> Result<()> {
-    if path.is_file() {
+    let metadata = artifact_metadata(path)?;
+    if metadata.is_file() || metadata.is_symlink() {
         add_artifact_file(path, crate_artifact)?;
-    } else if path.is_dir() {
+    } else if metadata.is_dir() {
         let entries = fs::read_dir(path).map_err(|source| HoldError::IoError {
             path: path.to_path_buf(),
             source,
@@ -149,10 +151,7 @@ fn add_artifact_files(path: &Path, crate_artifact: &mut CrateArtifact) -> Result
 
 /// Add a single artifact file to a crate artifact
 fn add_artifact_file(path: &Path, crate_artifact: &mut CrateArtifact) -> Result<()> {
-    let metadata = fs::metadata(path).map_err(|source| HoldError::IoError {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let metadata = artifact_metadata(path)?;
 
     // If it's a directory, add all its contents but not the directory itself
     if metadata.is_dir() {
@@ -162,10 +161,12 @@ fn add_artifact_file(path: &Path, crate_artifact: &mut CrateArtifact) -> Result<
             path: path.to_path_buf(),
             size: 0,                           // Directories don't have meaningful size
             _modified: SystemTime::UNIX_EPOCH, // Don't use directory mtime for age calculation
+            is_regular_file: false,
         };
         crate_artifact.artifacts.push(artifact_info);
     } else {
-        // For files, track their modification time
+        // For files and symlinks, track their modification time without following
+        // links.
         let modified = metadata.modified().map_err(|source| HoldError::IoError {
             path: path.to_path_buf(),
             source,
@@ -175,6 +176,7 @@ fn add_artifact_file(path: &Path, crate_artifact: &mut CrateArtifact) -> Result<
             path: path.to_path_buf(),
             size: metadata.len(),
             _modified: modified,
+            is_regular_file: metadata.is_file(),
         };
 
         crate_artifact.total_size += artifact_info.size;
@@ -186,6 +188,13 @@ fn add_artifact_file(path: &Path, crate_artifact: &mut CrateArtifact) -> Result<
     }
 
     Ok(())
+}
+
+fn artifact_metadata(path: &Path) -> Result<fs::Metadata> {
+    fs::symlink_metadata(path).map_err(|source| HoldError::IoError {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// Cutoff used to decide whether an artifact belongs to the previous CI build.
@@ -277,11 +286,11 @@ pub(crate) fn rejuvenate_stale_artifact_mtimes(
         // Truly ancient crates stay old so age/size GC can still evict them.
         if artifact.newest_mtime < cutoff && artifact.newest_mtime >= age_cutoff {
             if dry_run {
-                files_touched += artifact
-                    .artifacts
-                    .iter()
-                    .filter(|info| info.path.is_file())
-                    .count();
+                for info in &artifact.artifacts {
+                    if info.is_regular_file {
+                        files_touched += 1;
+                    }
+                }
                 artifact.newest_mtime = refresh_time;
                 crates_refreshed += 1;
                 continue;
@@ -289,7 +298,7 @@ pub(crate) fn rejuvenate_stale_artifact_mtimes(
 
             let mut newest = SystemTime::UNIX_EPOCH;
             for info in &mut artifact.artifacts {
-                if info.path.is_file() {
+                if info.is_regular_file {
                     set_file_mtime(&info.path, refresh_time)?;
                     info._modified = refresh_time;
                     files_touched += 1;

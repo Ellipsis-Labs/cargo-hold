@@ -4,8 +4,8 @@ use std::time::{Duration, SystemTime};
 use proptest::prelude::*;
 
 use super::artifacts::{
-    ArtifactInfo, CrateArtifact, parse_crate_artifact_name, rejuvenate_stale_artifact_mtimes,
-    select_artifacts_for_removal,
+    ArtifactInfo, CrateArtifact, collect_crate_artifacts, parse_crate_artifact_name,
+    rejuvenate_stale_artifact_mtimes, select_artifacts_for_removal,
 };
 use super::size::{format_size, parse_size};
 
@@ -95,6 +95,20 @@ proptest! {
 
 // Helper functions
 
+fn artifact_info(
+    path: impl Into<PathBuf>,
+    size: u64,
+    mtime: SystemTime,
+    is_regular_file: bool,
+) -> ArtifactInfo {
+    ArtifactInfo {
+        path: path.into(),
+        size,
+        _modified: mtime,
+        is_regular_file,
+    }
+}
+
 fn create_test_artifact(name: &str, hash: &str, size: u64, age_days: u64) -> CrateArtifact {
     let mtime = SystemTime::now()
         .checked_sub(Duration::from_secs(age_days * 24 * 60 * 60))
@@ -103,11 +117,12 @@ fn create_test_artifact(name: &str, hash: &str, size: u64, age_days: u64) -> Cra
     CrateArtifact {
         name: name.to_string(),
         hash: hash.to_string(),
-        artifacts: vec![ArtifactInfo {
-            path: PathBuf::from(format!("target/debug/deps/lib{name}-{hash}.rlib")),
+        artifacts: vec![artifact_info(
+            format!("target/debug/deps/lib{name}-{hash}.rlib"),
             size,
-            _modified: mtime,
-        }],
+            mtime,
+            true,
+        )],
         total_size: size,
         newest_mtime: mtime,
     }
@@ -864,11 +879,7 @@ fn test_rejuvenate_stale_artifact_mtimes_enables_preservation() {
         CrateArtifact {
             name: name.to_string(),
             hash: hash.to_string(),
-            artifacts: vec![ArtifactInfo {
-                path,
-                size,
-                _modified: mtime,
-            }],
+            artifacts: vec![artifact_info(path, size, mtime, true)],
             total_size: size,
             newest_mtime: mtime,
         }
@@ -924,4 +935,70 @@ fn test_rejuvenate_stale_artifact_mtimes_enables_preservation() {
     );
     assert_eq!(after.len(), 1);
     assert_eq!(after[0].name, "old_artifact");
+}
+
+#[test]
+#[cfg(unix)]
+fn test_rejuvenate_stale_artifact_mtimes_skips_symlinks() {
+    use std::fs;
+    use std::io::Write;
+    use std::os::unix::fs::symlink;
+
+    use tempfile::TempDir;
+
+    use crate::timestamp::set_file_mtime;
+
+    let temp_dir = TempDir::new().unwrap();
+    let fingerprint_dir = temp_dir
+        .path()
+        .join(".fingerprint")
+        .join("protobuf-src-4444444444444444");
+    fs::create_dir_all(&fingerprint_dir).unwrap();
+    let build_artifact_dir = temp_dir
+        .path()
+        .join("build")
+        .join("protobuf-src-4444444444444444")
+        .join("out")
+        .join("build")
+        .join("src")
+        .join(".libs");
+    fs::create_dir_all(&build_artifact_dir).unwrap();
+
+    let now = SystemTime::now();
+    let one_hour_ago = now.checked_sub(Duration::from_secs(3600)).unwrap();
+    let one_day_ago = now.checked_sub(Duration::from_secs(24 * 3600)).unwrap();
+
+    let artifact_path = build_artifact_dir.join("libprotobuf-lite.a");
+    let mut file = fs::File::create(&artifact_path).unwrap();
+    file.write_all(&[0u8; 16]).unwrap();
+    set_file_mtime(&artifact_path, one_day_ago).unwrap();
+
+    let link_path = build_artifact_dir.join("libprotobuf-lite.la");
+    symlink(&artifact_path, &link_path).unwrap();
+    let stale_filetime = filetime::FileTime::from_system_time(one_day_ago);
+    filetime::set_symlink_file_times(&link_path, stale_filetime, stale_filetime).unwrap();
+
+    let mut artifacts = collect_crate_artifacts(temp_dir.path()).unwrap();
+    let artifact = artifacts
+        .iter()
+        .find(|artifact| artifact.name == "protobuf-src")
+        .unwrap();
+    assert!(artifact.artifacts.iter().any(|info| info.path == link_path));
+
+    let previous_build_nanos = one_hour_ago
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    let touched = rejuvenate_stale_artifact_mtimes(
+        &mut artifacts,
+        Some(previous_build_nanos),
+        30,
+        false,
+        0,
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(touched, 1);
 }
