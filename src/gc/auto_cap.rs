@@ -1,4 +1,6 @@
-use crate::state::{CapTrace, GcMetrics};
+use crate::state::{
+    CAP_TRACE_SAMPLE_SOURCE_HEALTHY, CAP_TRACE_SAMPLE_SOURCE_LEGACY, CapTrace, GcMetrics,
+};
 
 pub(crate) const GC_METRICS_WINDOW: usize = 20;
 pub(crate) const MIN_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB safety cushion
@@ -25,9 +27,17 @@ pub(crate) fn suggest_max_target_size(
         None => (seed_from_current?, true),
     };
 
-    let finals = finals_from_metrics(metrics, seed);
-    let growths = growths_from_metrics(metrics, &finals, seed);
+    let SizingSamples {
+        finals,
+        source,
+        ignored_over_cap_count,
+    } = sizing_samples_from_metrics(metrics, seed);
     let final_growths = positive_final_growths(&finals);
+    let growths = if matches!(source, SampleSource::Healthy) {
+        final_growths.clone()
+    } else {
+        growths_from_metrics(metrics, &finals, seed)
+    };
     let baseline = baseline_from_finals(&finals);
     let has_prev_cap = metrics.last_suggested_cap.is_some();
     let growth_budget = growth_budget_from_growths(&growths, has_prev_cap);
@@ -113,8 +123,25 @@ pub(crate) fn suggest_max_target_size(
             growth_budget,
             observed_growth_pct,
             clamp_reason,
+            sample_source: source.as_str().to_string(),
+            sample_count: finals.len() as u32,
+            ignored_over_cap_sample_count: ignored_over_cap_count as u32,
         },
     ))
+}
+
+pub(crate) fn cap_overage(final_size: u64, cap: u64) -> u64 {
+    final_size.saturating_sub(cap)
+}
+
+pub(crate) fn record_auto_cap_outcome(metrics: &mut GcMetrics, cap: u64, final_size: u64) -> u64 {
+    let overage = cap_overage(final_size, cap);
+    if overage == 0 {
+        push_bounded(&mut metrics.recent_sizing_final_sizes, final_size);
+    } else {
+        push_bounded(&mut metrics.recent_cap_overage_bytes, overage);
+    }
+    overage
 }
 
 pub(crate) fn percentile(sorted: &[u64], p: u32) -> u64 {
@@ -145,6 +172,55 @@ fn finals_from_metrics(metrics: &GcMetrics, seed: u64) -> Vec<u64> {
     }
 
     finals
+}
+
+struct SizingSamples {
+    finals: Vec<u64>,
+    source: SampleSource,
+    ignored_over_cap_count: usize,
+}
+
+#[derive(Clone, Copy)]
+enum SampleSource {
+    Healthy,
+    Legacy,
+}
+
+impl SampleSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            SampleSource::Healthy => CAP_TRACE_SAMPLE_SOURCE_HEALTHY,
+            SampleSource::Legacy => CAP_TRACE_SAMPLE_SOURCE_LEGACY,
+        }
+    }
+}
+
+fn sizing_samples_from_metrics(metrics: &GcMetrics, seed: u64) -> SizingSamples {
+    if !metrics.recent_sizing_final_sizes.is_empty() {
+        return SizingSamples {
+            finals: metrics.recent_sizing_final_sizes.clone(),
+            source: SampleSource::Healthy,
+            ignored_over_cap_count: metrics.recent_cap_overage_bytes.len(),
+        };
+    }
+
+    let mut legacy_finals = finals_from_metrics(metrics, seed);
+    let mut ignored_over_cap_count = metrics.recent_cap_overage_bytes.len();
+    if let Some(cap) = metrics.last_suggested_cap {
+        let before = legacy_finals.len();
+        legacy_finals.retain(|final_size| *final_size <= cap);
+        ignored_over_cap_count = ignored_over_cap_count.max(before - legacy_finals.len());
+    }
+
+    if legacy_finals.is_empty() {
+        legacy_finals.push(seed);
+    }
+
+    SizingSamples {
+        finals: legacy_finals,
+        source: SampleSource::Legacy,
+        ignored_over_cap_count,
+    }
 }
 
 fn growths_from_metrics(metrics: &GcMetrics, finals: &[u64], seed: u64) -> Vec<u64> {

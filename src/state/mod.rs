@@ -13,7 +13,9 @@ mod tests;
 /// This version is incremented when incompatible changes are made to the
 /// metadata format. The tool will refuse to load metadata with a version higher
 /// than this constant.
-pub const METADATA_VERSION: u32 = 4;
+pub const METADATA_VERSION: u32 = 5;
+pub(crate) const CAP_TRACE_SAMPLE_SOURCE_HEALTHY: &str = "healthy";
+pub(crate) const CAP_TRACE_SAMPLE_SOURCE_LEGACY: &str = "legacy";
 
 /// Represents the state of a single file at a point in time.
 ///
@@ -187,6 +189,10 @@ pub struct GcMetrics {
     pub last_suggested_cap: Option<u64>,
     /// Bounded window of final target directory sizes after GC (bytes).
     pub recent_final_sizes: Vec<u64>,
+    /// Bounded window of final sizes that successfully satisfied the auto cap.
+    pub recent_sizing_final_sizes: Vec<u64>,
+    /// Bounded window of bytes by which auto-capped GC runs exceeded the cap.
+    pub recent_cap_overage_bytes: Vec<u64>,
     /// Last recorded cap computation trace for observability/debugging.
     pub last_cap_trace: Option<CapTrace>,
 }
@@ -202,4 +208,10 @@ pub struct CapTrace {
     pub observed_growth_pct: u64,
     /// Why the final clamp decision was chosen.
     pub clamp_reason: String,
+    /// Which sample series drove the cap calculation.
+    pub sample_source: String,
+    /// Number of final-size samples used for baseline/growth.
+    pub sample_count: u32,
+    /// Number of recent over-cap samples ignored by auto sizing.
+    pub ignored_over_cap_sample_count: u32,
 }

@@ -938,6 +938,91 @@ fn test_rejuvenate_stale_artifact_mtimes_enables_preservation() {
 }
 
 #[test]
+fn test_repeated_rejuvenated_gc_does_not_churn_current_artifacts() {
+    let now = SystemTime::now();
+    let one_hour_ago = now.checked_sub(Duration::from_secs(3600)).unwrap();
+    let one_day_ago = now.checked_sub(Duration::from_secs(24 * 3600)).unwrap();
+    let forty_days_ago = now
+        .checked_sub(Duration::from_secs(40 * 24 * 3600))
+        .unwrap();
+
+    let mut artifacts = vec![
+        CrateArtifact {
+            name: "hot_a".to_string(),
+            hash: "aaaaaaaaaaaaaaaa".to_string(),
+            artifacts: vec![artifact_info("hot_a.rlib", 6_000, one_day_ago, true)],
+            total_size: 6_000,
+            newest_mtime: one_day_ago,
+        },
+        CrateArtifact {
+            name: "hot_b".to_string(),
+            hash: "bbbbbbbbbbbbbbbb".to_string(),
+            artifacts: vec![artifact_info("hot_b.rlib", 5_000, one_day_ago, true)],
+            total_size: 5_000,
+            newest_mtime: one_day_ago,
+        },
+        CrateArtifact {
+            name: "cold".to_string(),
+            hash: "cccccccccccccccc".to_string(),
+            artifacts: vec![artifact_info("cold.rlib", 4_000, forty_days_ago, true)],
+            total_size: 4_000,
+            newest_mtime: forty_days_ago,
+        },
+    ];
+
+    let mut previous_build_nanos = one_hour_ago
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+
+    for run in 0..4 {
+        rejuvenate_stale_artifact_mtimes(
+            &mut artifacts,
+            Some(previous_build_nanos),
+            7,
+            true,
+            0,
+            true,
+        )
+        .unwrap();
+
+        let current_size: u64 = artifacts.iter().map(|artifact| artifact.total_size).sum();
+        let selected = select_artifacts_for_removal(
+            &artifacts,
+            current_size,
+            Some(1_000),
+            7,
+            Some(previous_build_nanos),
+            0,
+            true,
+        );
+        let selected_names: Vec<String> = selected
+            .iter()
+            .map(|artifact| artifact.name.clone())
+            .collect();
+
+        assert!(
+            !selected_names.iter().any(|name| name.starts_with("hot_")),
+            "run {run}: current build artifacts should not churn under a tight cap"
+        );
+        if run == 0 {
+            assert_eq!(selected_names, vec!["cold".to_string()]);
+        } else {
+            assert!(
+                selected_names.is_empty(),
+                "run {run}: once cold artifacts are gone, repeated GC should be stable"
+            );
+        }
+
+        artifacts.retain(|artifact| !selected_names.contains(&artifact.name));
+        previous_build_nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+    }
+}
+
+#[test]
 #[cfg(unix)]
 fn test_rejuvenate_stale_artifact_mtimes_skips_symlinks() {
     use std::fs;

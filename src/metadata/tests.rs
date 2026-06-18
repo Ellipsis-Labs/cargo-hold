@@ -7,9 +7,10 @@ use tempfile::TempDir;
 
 use crate::error::HoldError;
 use crate::metadata::{
-    StateMetadataV2, clean_metadata, load_metadata, migrate_metadata, save_metadata,
+    CapTraceV4, GcMetricsV4, StateMetadataV2, StateMetadataV4, clean_metadata, load_metadata,
+    migrate_metadata, save_metadata,
 };
-use crate::state::{FileState, METADATA_VERSION, StateMetadata};
+use crate::state::{CAP_TRACE_SAMPLE_SOURCE_LEGACY, FileState, METADATA_VERSION, StateMetadata};
 
 #[test]
 fn test_save_and_load_metadata() {
@@ -121,6 +122,43 @@ fn test_metadata_migration_v2_to_v3_adds_gc_metrics() {
     let loaded = load_metadata(&metadata_path).unwrap();
     assert_eq!(loaded.version, METADATA_VERSION);
     assert_eq!(loaded.gc_metrics.runs, 0);
+}
+
+#[test]
+fn test_metadata_migration_v4_to_v5_seeds_healthy_sizing_finals() {
+    let temp_dir = TempDir::new().unwrap();
+    let metadata_path = temp_dir.path().join("test.metadata");
+
+    let v4 = StateMetadataV4 {
+        version: 4,
+        files: HashMap::new(),
+        last_gc_mtime_nanos: None,
+        gc_metrics: GcMetricsV4 {
+            runs: 3,
+            seed_initial_size: Some(100),
+            recent_initial_sizes: vec![100, 150, 250],
+            recent_bytes_freed: vec![0, 25, 25],
+            last_suggested_cap: Some(150),
+            recent_final_sizes: vec![100, 125, 225],
+            last_cap_trace: Some(CapTraceV4 {
+                baseline: 125,
+                growth_budget: 25,
+                observed_growth_pct: 10,
+                clamp_reason: "within-window".to_string(),
+            }),
+        },
+    };
+    let bytes = rkyv::to_bytes::<rkyv::rancor::BoxedError>(&v4).unwrap();
+    std::fs::write(&metadata_path, bytes).unwrap();
+
+    let loaded = load_metadata(&metadata_path).unwrap();
+    assert_eq!(loaded.version, METADATA_VERSION);
+    assert_eq!(loaded.gc_metrics.recent_final_sizes, vec![100, 125, 225]);
+    assert_eq!(loaded.gc_metrics.recent_sizing_final_sizes, vec![100, 125]);
+    assert!(loaded.gc_metrics.recent_cap_overage_bytes.is_empty());
+    let trace = loaded.gc_metrics.last_cap_trace.unwrap();
+    assert_eq!(trace.sample_source, CAP_TRACE_SAMPLE_SOURCE_LEGACY);
+    assert_eq!(trace.sample_count, 0);
 }
 
 #[test]

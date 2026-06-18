@@ -7,7 +7,9 @@ use memmap2::Mmap;
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::error::{HoldError, Result};
-use crate::state::{FileState, GcMetrics, METADATA_VERSION, StateMetadata};
+use crate::state::{
+    CAP_TRACE_SAMPLE_SOURCE_LEGACY, FileState, GcMetrics, METADATA_VERSION, StateMetadata,
+};
 
 #[cfg(test)]
 mod tests;
@@ -55,15 +57,89 @@ impl From<StateMetadataV3> for StateMetadata {
             version: v3.version,
             files: v3.files,
             last_gc_mtime_nanos: v3.last_gc_mtime_nanos,
-            gc_metrics: GcMetrics {
-                runs: v3.gc_metrics.runs,
-                seed_initial_size: v3.gc_metrics.seed_initial_size,
-                recent_initial_sizes: v3.gc_metrics.recent_initial_sizes,
-                recent_bytes_freed: v3.gc_metrics.recent_bytes_freed,
-                last_suggested_cap: v3.gc_metrics.last_suggested_cap,
-                recent_final_sizes: Vec::new(),
-                last_cap_trace: None,
-            },
+            gc_metrics: v3.gc_metrics.into(),
+        }
+    }
+}
+
+impl From<GcMetricsV3> for GcMetrics {
+    fn from(v3: GcMetricsV3) -> Self {
+        Self {
+            runs: v3.runs,
+            seed_initial_size: v3.seed_initial_size,
+            recent_initial_sizes: v3.recent_initial_sizes,
+            recent_bytes_freed: v3.recent_bytes_freed,
+            last_suggested_cap: v3.last_suggested_cap,
+            ..Default::default()
+        }
+    }
+}
+
+/// Legacy layout for v4 metadata files (first to include final sizes + cap
+/// trace).
+#[derive(Archive, Deserialize, Serialize, Debug, Clone)]
+struct StateMetadataV4 {
+    pub version: u32,
+    pub files: HashMap<String, FileState>,
+    pub last_gc_mtime_nanos: Option<u128>,
+    pub gc_metrics: GcMetricsV4,
+}
+
+#[derive(Archive, Deserialize, Serialize, Debug, Clone, PartialEq, Default)]
+struct GcMetricsV4 {
+    pub runs: u32,
+    pub seed_initial_size: Option<u64>,
+    pub recent_initial_sizes: Vec<u64>,
+    pub recent_bytes_freed: Vec<u64>,
+    pub last_suggested_cap: Option<u64>,
+    pub recent_final_sizes: Vec<u64>,
+    pub last_cap_trace: Option<CapTraceV4>,
+}
+
+#[derive(Archive, Deserialize, Serialize, Debug, Clone, PartialEq, Default)]
+struct CapTraceV4 {
+    pub baseline: u64,
+    pub growth_budget: u64,
+    pub observed_growth_pct: u64,
+    pub clamp_reason: String,
+}
+
+impl From<CapTraceV4> for crate::state::CapTrace {
+    fn from(v4: CapTraceV4) -> Self {
+        Self {
+            baseline: v4.baseline,
+            growth_budget: v4.growth_budget,
+            observed_growth_pct: v4.observed_growth_pct,
+            clamp_reason: v4.clamp_reason,
+            sample_source: CAP_TRACE_SAMPLE_SOURCE_LEGACY.to_string(),
+            sample_count: 0,
+            ignored_over_cap_sample_count: 0,
+        }
+    }
+}
+
+impl From<GcMetricsV4> for GcMetrics {
+    fn from(v4: GcMetricsV4) -> Self {
+        Self {
+            runs: v4.runs,
+            seed_initial_size: v4.seed_initial_size,
+            recent_initial_sizes: v4.recent_initial_sizes,
+            recent_bytes_freed: v4.recent_bytes_freed,
+            last_suggested_cap: v4.last_suggested_cap,
+            recent_final_sizes: v4.recent_final_sizes,
+            last_cap_trace: v4.last_cap_trace.map(Into::into),
+            ..Default::default()
+        }
+    }
+}
+
+impl From<StateMetadataV4> for StateMetadata {
+    fn from(v4: StateMetadataV4) -> Self {
+        StateMetadata {
+            version: v4.version,
+            files: v4.files,
+            last_gc_mtime_nanos: v4.last_gc_mtime_nanos,
+            gc_metrics: v4.gc_metrics.into(),
         }
     }
 }
@@ -190,6 +266,14 @@ fn migrate_metadata(mut metadata: StateMetadata) -> Result<StateMetadata> {
         metadata.version = 4;
     }
 
+    // Migration from v4 to v5: add healthy sizing samples + cap overage history.
+    if metadata.version == 4 {
+        metadata.gc_metrics.recent_sizing_final_sizes =
+            healthy_sizing_finals_from_v4(&metadata.gc_metrics);
+        metadata.gc_metrics.recent_cap_overage_bytes = Vec::new();
+        metadata.version = 5;
+    }
+
     Ok(metadata)
 }
 
@@ -197,6 +281,9 @@ fn deserialize_metadata(bytes: &[u8]) -> Result<StateMetadata> {
     match rkyv::from_bytes::<StateMetadata, rkyv::rancor::BoxedError>(bytes) {
         Ok(metadata) => Ok(metadata),
         Err(primary_err) => {
+            if let Ok(v4) = rkyv::from_bytes::<StateMetadataV4, rkyv::rancor::BoxedError>(bytes) {
+                return Ok(StateMetadata::from(v4));
+            }
             if let Ok(v3) = rkyv::from_bytes::<StateMetadataV3, rkyv::rancor::BoxedError>(bytes) {
                 return Ok(StateMetadata::from(v3));
             }
@@ -206,6 +293,19 @@ fn deserialize_metadata(bytes: &[u8]) -> Result<StateMetadata> {
             Err(HoldError::DeserializationError(primary_err))
         }
     }
+}
+
+fn healthy_sizing_finals_from_v4(metrics: &GcMetrics) -> Vec<u64> {
+    let Some(cap) = metrics.last_suggested_cap else {
+        return Vec::new();
+    };
+
+    metrics
+        .recent_final_sizes
+        .iter()
+        .copied()
+        .filter(|final_size| *final_size <= cap)
+        .collect()
 }
 
 /// Saves the state metadata to disk atomically.

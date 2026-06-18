@@ -159,23 +159,26 @@ impl<'a> Heave<'a> {
         {
             max_size = Some(suggested);
             auto_cap_used = true;
-            cap_trace = Some(trace.clone());
-            if !log.quiet()
-                && let Some(trace) = cap_trace.as_ref()
-            {
+            if !log.quiet() {
                 // Always log a concise summary (even without verbose) so CI logs show why the
                 // cap moved.
                 eprintln!(
                     "Auto-selected max target size: {} (baseline {}, headroom {}, growth p90 {}%, \
-                     clamp {})",
+                     clamp {}, samples {}:{}, ignored over-cap {})",
                     gc::format_size(suggested),
                     gc::format_size(trace.baseline),
                     gc::format_size(trace.growth_budget),
                     trace.observed_growth_pct,
-                    trace.clamp_reason
+                    trace.clamp_reason,
+                    trace.sample_source,
+                    trace.sample_count,
+                    trace.ignored_over_cap_sample_count
                 );
             }
+            cap_trace = Some(trace);
         }
+
+        let auto_cap = max_size.filter(|_| auto_cap_used);
 
         let mut builder = Gc::builder()
             .target_dir(self.gc.target_dir().to_path_buf())
@@ -197,6 +200,7 @@ impl<'a> Heave<'a> {
         let config = builder.build();
 
         let stats = config.perform_gc(self.gc.verbose())?;
+        let auto_cap_overage = auto_cap.map(|cap| auto_cap::cap_overage(stats.final_size, cap));
 
         if !log.quiet() {
             eprintln!("Garbage collection complete:");
@@ -216,6 +220,15 @@ impl<'a> Heave<'a> {
             if let Some(cap) = max_size {
                 let mode = if auto_cap_used { "auto" } else { "user" };
                 eprintln!("  Cap used ({}): {}", mode, gc::format_size(cap));
+                if let Some(overage) = auto_cap_overage
+                    && overage > 0
+                {
+                    eprintln!(
+                        "  Warning: final size exceeded auto cap by {}; this run will not update \
+                         auto-sizing baselines",
+                        gc::format_size(overage)
+                    );
+                }
             }
 
             if self.gc.dry_run() {
@@ -244,6 +257,13 @@ impl<'a> Heave<'a> {
             if auto_cap_used {
                 metadata.gc_metrics.last_suggested_cap = max_size;
                 metadata.gc_metrics.last_cap_trace = cap_trace.clone();
+                if let Some(cap) = auto_cap {
+                    auto_cap::record_auto_cap_outcome(
+                        &mut metadata.gc_metrics,
+                        cap,
+                        stats.final_size,
+                    );
+                }
             }
 
             if !self.gc.dry_run() {
