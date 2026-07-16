@@ -29,7 +29,7 @@ blake3    = { version = "1.8.5", features = ["rayon", "mmap"] }
 clap      = { version = "4.6.1", features = ["derive", "cargo", "env"] }
 git2      = "0.21.0"
 home      = "0.5.12"
-memmap2   = "0.9.10"
+memmap2   = "0.9.11"
 miette    = { version = "7.6.0", features = ["fancy"] }
 rayon     = "1.12.0"
 regex     = "1.12.3"
