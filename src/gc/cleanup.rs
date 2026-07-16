@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use super::artifacts::{
     collect_crate_artifacts, rejuvenate_stale_artifact_mtimes, remove_crate_artifacts,
-    select_artifacts_for_removal,
+    select_artifacts_for_removal_with_stats,
 };
 use super::config::{Gc, GcStats};
 use super::size::format_size;
@@ -83,7 +83,8 @@ pub(crate) fn clean_profile_directory(
 
     // First, preserve binaries
     let binaries = preserve_binaries(profile_dir, verbose, config.quiet())?;
-    stats.binaries_preserved = binaries.len();
+    stats.binaries_preserved = binaries.count;
+    stats.preserved_binary_bytes = binaries.bytes;
 
     // Remove incremental compilation data
     let incremental_dir = profile_dir.join("incremental");
@@ -133,7 +134,11 @@ pub(crate) fn clean_profile_directory(
         );
     }
 
-    let to_remove = select_artifacts_for_removal(
+    let artifact_bytes: u64 = crate_artifacts
+        .iter()
+        .map(|artifact| artifact.total_size)
+        .sum();
+    let selection = select_artifacts_for_removal_with_stats(
         &crate_artifacts,
         current_total_size,
         config.max_target_size(),
@@ -142,13 +147,28 @@ pub(crate) fn clean_profile_directory(
         verbose,
         config.quiet(),
     );
+    stats.protected_artifact_bytes = selection.protected_bytes;
+    stats.eligible_artifact_bytes = selection.eligible_bytes;
+    let selected_bytes: u64 = selection
+        .to_remove
+        .iter()
+        .map(|artifact| artifact.total_size)
+        .sum();
+    stats.retained_artifact_bytes = if config.dry_run() {
+        artifact_bytes
+    } else {
+        artifact_bytes.saturating_sub(selected_bytes)
+    };
 
     if !log.quiet() && (log.level() > 1 || config.debug()) {
-        eprintln!("  Selected {} crates for removal", to_remove.len());
+        eprintln!(
+            "  Selected {} crates for removal",
+            selection.to_remove.len()
+        );
     }
 
     // Remove selected crates
-    for crate_artifact in to_remove {
+    for crate_artifact in selection.to_remove {
         if !log.quiet() && log.level() > 1 {
             eprintln!(
                 "  Removing {}-{} ({})",
@@ -170,10 +190,16 @@ pub(crate) fn clean_profile_directory(
     Ok(stats)
 }
 
-/// Preserve binary files in the profile directory
-fn preserve_binaries(profile_dir: &Path, verbose: u8, quiet: bool) -> Result<Vec<PathBuf>> {
+#[derive(Default)]
+struct PreservedBinaries {
+    count: usize,
+    bytes: u64,
+}
+
+/// Account for binary files that GC deliberately preserves in the profile root.
+fn preserve_binaries(profile_dir: &Path, verbose: u8, quiet: bool) -> Result<PreservedBinaries> {
     let log = Logger::new(verbose, quiet);
-    let mut binaries = Vec::new();
+    let mut binaries = PreservedBinaries::default();
 
     let entries = fs::read_dir(profile_dir).map_err(|source| HoldError::IoError {
         path: profile_dir.to_path_buf(),
@@ -200,9 +226,13 @@ fn preserve_binaries(profile_dir: &Path, verbose: u8, quiet: bool) -> Result<Vec
                     if is_executable && has_no_extension {
                         log.verbose(
                             2,
-                            format!("  Preserving binary: {:?}", path.file_name().unwrap()),
+                            format!(
+                                "  Preserving binary: {:?}",
+                                path.file_name().unwrap_or(path.as_os_str())
+                            ),
                         );
-                        binaries.push(path);
+                        binaries.count += 1;
+                        binaries.bytes = binaries.bytes.saturating_add(metadata.len());
                     }
                 }
             }
@@ -210,12 +240,18 @@ fn preserve_binaries(profile_dir: &Path, verbose: u8, quiet: bool) -> Result<Vec
             #[cfg(not(unix))]
             {
                 // On Windows, check for .exe extension
-                if path.extension().map_or(false, |ext| ext == "exe") {
+                if path.extension().is_some_and(|ext| ext == "exe") {
                     log.verbose(
                         2,
-                        format!("  Preserving binary: {:?}", path.file_name().unwrap()),
+                        format!(
+                            "  Preserving binary: {:?}",
+                            path.file_name().unwrap_or(path.as_os_str())
+                        ),
                     );
-                    binaries.push(path);
+                    binaries.count += 1;
+                    binaries.bytes = binaries
+                        .bytes
+                        .saturating_add(path.metadata().map_or(0, |metadata| metadata.len()));
                 }
             }
         }

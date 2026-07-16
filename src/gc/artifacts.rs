@@ -30,6 +30,12 @@ pub(crate) struct CrateArtifact {
     pub(crate) newest_mtime: SystemTime,
 }
 
+pub(crate) struct ArtifactSelection<'a> {
+    pub(crate) to_remove: Vec<&'a CrateArtifact>,
+    pub(crate) protected_bytes: u64,
+    pub(crate) eligible_bytes: u64,
+}
+
 /// Collect all crate artifacts from a profile directory
 pub(crate) fn collect_crate_artifacts(profile_dir: &Path) -> Result<Vec<CrateArtifact>> {
     let fingerprint_dir = profile_dir.join(".fingerprint");
@@ -359,6 +365,7 @@ pub(crate) fn rejuvenate_stale_artifact_mtimes(
 /// # Returns
 ///
 /// A vector of references to artifacts that should be removed
+#[cfg(test)]
 pub(crate) fn select_artifacts_for_removal(
     crate_artifacts: &[CrateArtifact],
     current_size: u64,
@@ -368,19 +375,45 @@ pub(crate) fn select_artifacts_for_removal(
     verbose: u8,
     quiet: bool,
 ) -> Vec<&CrateArtifact> {
-    let remaining = preserve_previous_build_artifacts(
+    select_artifacts_for_removal_with_stats(
+        crate_artifacts,
+        current_size,
+        max_size,
+        age_threshold_days,
+        previous_build_mtime_nanos,
+        verbose,
+        quiet,
+    )
+    .to_remove
+}
+
+pub(crate) fn select_artifacts_for_removal_with_stats(
+    crate_artifacts: &[CrateArtifact],
+    current_size: u64,
+    max_size: Option<u64>,
+    age_threshold_days: u32,
+    previous_build_mtime_nanos: Option<u128>,
+    verbose: u8,
+    quiet: bool,
+) -> ArtifactSelection<'_> {
+    let (remaining, protected_bytes) = preserve_previous_build_artifacts(
         crate_artifacts.iter().collect(),
         previous_build_mtime_nanos,
         age_threshold_days,
         verbose,
         quiet,
     );
+    let eligible_bytes = remaining.iter().map(|artifact| artifact.total_size).sum();
 
     let (mut to_remove, remaining) = select_for_size(remaining, current_size, max_size, quiet);
     let age_selected = select_for_age(remaining, age_threshold_days, verbose, quiet);
     to_remove.extend(age_selected);
 
-    to_remove
+    ArtifactSelection {
+        to_remove,
+        protected_bytes,
+        eligible_bytes,
+    }
 }
 
 fn preserve_previous_build_artifacts(
@@ -389,7 +422,7 @@ fn preserve_previous_build_artifacts(
     age_threshold_days: u32,
     verbose: u8,
     quiet: bool,
-) -> Vec<&CrateArtifact> {
+) -> (Vec<&CrateArtifact>, u64) {
     let log = Logger::new(verbose, quiet);
     if let Some(previous_mtime_nanos) = previous_build_mtime_nanos {
         if let Some(cutoff_time) =
@@ -413,7 +446,8 @@ fn preserve_previous_build_artifacts(
                 }
             }
 
-            return eligible;
+            let preserved_bytes = preserved.iter().map(|artifact| artifact.total_size).sum();
+            return (eligible, preserved_bytes);
         }
 
         log.verbose(
@@ -423,7 +457,7 @@ fn preserve_previous_build_artifacts(
         );
     }
 
-    artifacts
+    (artifacts, 0)
 }
 
 fn select_for_size(

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -6,11 +5,8 @@ use std::time::SystemTime;
 use tempfile::TempDir;
 
 use crate::error::HoldError;
-use crate::metadata::{
-    CapTraceV4, GcMetricsV4, StateMetadataV2, StateMetadataV4, clean_metadata, load_metadata,
-    migrate_metadata, save_metadata,
-};
-use crate::state::{CAP_TRACE_SAMPLE_SOURCE_LEGACY, FileState, METADATA_VERSION, StateMetadata};
+use crate::metadata::{clean_metadata, load_metadata, save_metadata};
+use crate::state::{AutoCapRun, FileState, METADATA_VERSION, StateMetadata};
 
 #[test]
 fn test_save_and_load_metadata() {
@@ -106,87 +102,46 @@ fn test_metadata_version() {
 }
 
 #[test]
-fn test_metadata_migration_v2_to_v3_adds_gc_metrics() {
+fn test_fresh_auto_cap_metrics_round_trip() {
     let temp_dir = TempDir::new().unwrap();
     let metadata_path = temp_dir.path().join("test.metadata");
 
-    // Simulate v2 metadata on disk (without gc_metrics field).
-    let v2 = StateMetadataV2 {
-        version: 2,
-        files: HashMap::new(),
-        last_gc_mtime_nanos: None,
-    };
-    let bytes = rkyv::to_bytes::<rkyv::rancor::BoxedError>(&v2).unwrap();
-    std::fs::write(&metadata_path, bytes).unwrap();
-
-    let loaded = load_metadata(&metadata_path).unwrap();
-    assert_eq!(loaded.version, METADATA_VERSION);
-    assert_eq!(loaded.gc_metrics.runs, 0);
-}
-
-#[test]
-fn test_metadata_migration_v4_to_v5_seeds_healthy_sizing_finals() {
-    let temp_dir = TempDir::new().unwrap();
-    let metadata_path = temp_dir.path().join("test.metadata");
-
-    let v4 = StateMetadataV4 {
-        version: 4,
-        files: HashMap::new(),
-        last_gc_mtime_nanos: None,
-        gc_metrics: GcMetricsV4 {
-            runs: 3,
-            seed_initial_size: Some(100),
-            recent_initial_sizes: vec![100, 150, 250],
-            recent_bytes_freed: vec![0, 25, 25],
-            last_suggested_cap: Some(150),
-            recent_final_sizes: vec![100, 125, 225],
-            last_cap_trace: Some(CapTraceV4 {
-                baseline: 125,
-                growth_budget: 25,
-                observed_growth_pct: 10,
-                clamp_reason: "within-window".to_string(),
-            }),
-        },
-    };
-    let bytes = rkyv::to_bytes::<rkyv::rancor::BoxedError>(&v4).unwrap();
-    std::fs::write(&metadata_path, bytes).unwrap();
-
-    let loaded = load_metadata(&metadata_path).unwrap();
-    assert_eq!(loaded.version, METADATA_VERSION);
-    assert_eq!(loaded.gc_metrics.recent_final_sizes, vec![100, 125, 225]);
-    assert_eq!(loaded.gc_metrics.recent_sizing_final_sizes, vec![100, 125]);
-    assert!(loaded.gc_metrics.recent_cap_overage_bytes.is_empty());
-    let trace = loaded.gc_metrics.last_cap_trace.unwrap();
-    assert_eq!(trace.sample_source, CAP_TRACE_SAMPLE_SOURCE_LEGACY);
-    assert_eq!(trace.sample_count, 0);
-}
-
-#[test]
-fn test_metadata_migration_v1_to_v3() {
-    let temp_dir = TempDir::new().unwrap();
-    let metadata_path = temp_dir.path().join("test.metadata");
-
-    // Create v1 metadata manually (simulate old version)
     let mut metadata = StateMetadata::new();
-    metadata.version = 1; // Force to v1
-    metadata
-        .upsert(FileState {
-            path: PathBuf::from("test.rs"),
-            size: 100,
-            hash: "hash".to_string(),
-            mtime_nanos: 123456789,
-        })
-        .unwrap();
+    metadata.gc_metrics.runs = 1;
+    metadata.gc_metrics.last_suggested_cap = Some(4096);
+    metadata.gc_metrics.recent_auto_cap_runs.push(AutoCapRun {
+        cap: 4096,
+        initial_size: 8192,
+        final_size: 6144,
+        bytes_freed: 2048,
+        protected_artifact_bytes: 5120,
+        eligible_artifact_bytes: 2048,
+        retained_artifact_bytes: 5120,
+        preserved_binary_bytes: 512,
+        unrecognized_bytes: 512,
+    });
 
-    // Save with v1
+    save_metadata(&metadata, &metadata_path).unwrap();
+    let loaded = load_metadata(&metadata_path).unwrap();
+
+    assert_eq!(loaded.version, METADATA_VERSION);
+    assert_eq!(loaded.gc_metrics, metadata.gc_metrics);
+}
+
+#[test]
+fn test_older_metadata_version_is_discarded_without_migration() {
+    let temp_dir = TempDir::new().unwrap();
+    let metadata_path = temp_dir.path().join("test.metadata");
+
+    let mut metadata = StateMetadata::new();
+    metadata.version = METADATA_VERSION - 1;
+    metadata.gc_metrics.last_suggested_cap = Some(123);
     save_metadata(&metadata, &metadata_path).unwrap();
 
-    // Load should migrate to latest
-    let loaded_metadata = load_metadata(&metadata_path).unwrap();
-    assert_eq!(loaded_metadata.version, METADATA_VERSION);
-    assert_eq!(loaded_metadata.len(), 1);
-    assert!(loaded_metadata.last_gc_mtime_nanos.is_none()); // Should be None after migration
-    assert_eq!(loaded_metadata.gc_metrics.runs, 0);
+    let loaded = load_metadata(&metadata_path).unwrap();
+    assert_eq!(loaded.version, METADATA_VERSION);
+    assert_eq!(loaded.gc_metrics, Default::default());
+    assert!(!metadata_path.exists());
 }
 
 #[test]
@@ -301,39 +256,6 @@ fn test_format_incompatibility_with_subsequent_save() {
     assert_eq!(reloaded.version, METADATA_VERSION);
     assert_eq!(reloaded.len(), 1);
     assert!(reloaded.get(Path::new("test.rs")).unwrap().is_some());
-}
-
-#[test]
-fn test_version_migration_logic() {
-    // Test the migration function directly since we can't easily create true v1
-    // files with the current structure (rkyv serialization includes the
-    // struct definition)
-
-    // Create metadata that simulates v1 structure
-    let mut v1_metadata = StateMetadata::new();
-    v1_metadata.version = 1; // Manually set to v1
-    v1_metadata
-        .upsert(FileState {
-            path: PathBuf::from("legacy.rs"),
-            size: 200,
-            hash: "legacyhash".to_string(),
-            mtime_nanos: 9876543210,
-        })
-        .unwrap();
-
-    // The v1 structure didn't have last_gc_mtime_nanos, so it should be None
-    assert!(v1_metadata.last_gc_mtime_nanos.is_none());
-    assert_eq!(v1_metadata.version, 1);
-
-    // Test migration function directly
-    let migrated = migrate_metadata(v1_metadata).unwrap();
-
-    // Verify migration occurred
-    assert_eq!(migrated.version, METADATA_VERSION); // Should be current now
-    assert_eq!(migrated.len(), 1);
-    assert!(migrated.get(Path::new("legacy.rs")).unwrap().is_some());
-    assert!(migrated.last_gc_mtime_nanos.is_none()); // migration preserves None
-    assert_eq!(migrated.gc_metrics.runs, 0);
 }
 
 #[test]

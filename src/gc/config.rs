@@ -158,6 +158,10 @@ impl Gc {
             stats.artifacts_removed += profile_stats.artifacts_removed;
             stats.crates_cleaned += profile_stats.crates_cleaned;
             stats.binaries_preserved += profile_stats.binaries_preserved;
+            stats.preserved_binary_bytes += profile_stats.preserved_binary_bytes;
+            stats.protected_artifact_bytes += profile_stats.protected_artifact_bytes;
+            stats.eligible_artifact_bytes += profile_stats.eligible_artifact_bytes;
+            stats.retained_artifact_bytes += profile_stats.retained_artifact_bytes;
         }
 
         // Clean other directories (doc, package, tmp)
@@ -177,6 +181,10 @@ impl Gc {
 
         // Calculate final size
         stats.final_size = calculate_directory_size(self.target_dir())?;
+        stats.unrecognized_bytes = stats
+            .final_size
+            .saturating_sub(stats.retained_artifact_bytes)
+            .saturating_sub(stats.preserved_binary_bytes);
 
         Ok(stats)
     }
@@ -397,4 +405,22 @@ pub struct GcStats {
     pub final_size: u64,
     /// Number of binaries preserved
     pub binaries_preserved: usize,
+    /// Bytes occupied by root-profile executables deliberately preserved by GC.
+    pub preserved_binary_bytes: u64,
+    /// Recognized crate artifacts protected by the previous-build policy.
+    pub protected_artifact_bytes: u64,
+    /// Recognized crate artifacts eligible for size-based removal.
+    pub eligible_artifact_bytes: u64,
+    /// Recognized crate artifacts remaining after GC.
+    pub retained_artifact_bytes: u64,
+    /// Final target bytes not recognized or deliberately preserved by GC.
+    pub unrecognized_bytes: u64,
+}
+
+impl GcStats {
+    /// Bytes that GC can prove were retained by its preservation policy.
+    pub(crate) fn policy_floor(&self) -> u64 {
+        self.protected_artifact_bytes
+            .saturating_add(self.preserved_binary_bytes)
+    }
 }

@@ -13,9 +13,10 @@ mod tests;
 /// This version is incremented when incompatible changes are made to the
 /// metadata format. The tool will refuse to load metadata with a version higher
 /// than this constant.
-pub const METADATA_VERSION: u32 = 5;
+pub const METADATA_VERSION: u32 = 6;
 pub(crate) const CAP_TRACE_SAMPLE_SOURCE_HEALTHY: &str = "healthy";
-pub(crate) const CAP_TRACE_SAMPLE_SOURCE_LEGACY: &str = "legacy";
+pub(crate) const CAP_TRACE_SAMPLE_SOURCE_POLICY_FLOOR: &str = "policy-floor";
+pub(crate) const CAP_TRACE_SAMPLE_SOURCE_HELD: &str = "held";
 
 /// Represents the state of a single file at a point in time.
 ///
@@ -178,23 +179,51 @@ impl Default for StateMetadata {
 pub struct GcMetrics {
     /// Total number of GC runs recorded.
     pub runs: u32,
-    /// Size of the first full build observed; used as a baseline.
-    pub seed_initial_size: Option<u64>,
-    /// Bounded window of recent initial target directory sizes before GC
-    /// (bytes).
-    pub recent_initial_sizes: Vec<u64>,
-    /// Bounded window of recent freed byte counts (bytes).
-    pub recent_bytes_freed: Vec<u64>,
+    /// One bounded chronological window of auto-capped GC outcomes.
+    pub recent_auto_cap_runs: Vec<AutoCapRun>,
     /// Last suggested cap (bytes) recorded by auto-sizing.
     pub last_suggested_cap: Option<u64>,
-    /// Bounded window of final target directory sizes after GC (bytes).
-    pub recent_final_sizes: Vec<u64>,
-    /// Bounded window of final sizes that successfully satisfied the auto cap.
-    pub recent_sizing_final_sizes: Vec<u64>,
-    /// Bounded window of bytes by which auto-capped GC runs exceeded the cap.
-    pub recent_cap_overage_bytes: Vec<u64>,
     /// Last recorded cap computation trace for observability/debugging.
     pub last_cap_trace: Option<CapTrace>,
+}
+
+/// One auto-capped garbage-collection outcome.
+#[derive(Archive, Deserialize, Serialize, Debug, Clone, PartialEq, Default)]
+pub struct AutoCapRun {
+    /// Selected auto cap for this run.
+    pub cap: u64,
+    /// Target size before GC.
+    pub initial_size: u64,
+    /// Target size after GC.
+    pub final_size: u64,
+    /// Bytes removed by GC.
+    pub bytes_freed: u64,
+    /// Recognized crate artifacts protected by the previous-build policy.
+    pub protected_artifact_bytes: u64,
+    /// Recognized crate artifacts that were eligible for size-based removal.
+    pub eligible_artifact_bytes: u64,
+    /// Recognized crate artifacts remaining after GC.
+    pub retained_artifact_bytes: u64,
+    /// Root-profile executable bytes deliberately preserved by GC.
+    pub preserved_binary_bytes: u64,
+    /// Final target bytes not recognized or deliberately preserved by GC.
+    pub unrecognized_bytes: u64,
+}
+
+impl AutoCapRun {
+    /// Bytes that GC can prove were retained by its preservation policy.
+    pub(crate) fn policy_floor(&self) -> u64 {
+        self.protected_artifact_bytes
+            .saturating_add(self.preserved_binary_bytes)
+    }
+
+    pub(crate) fn is_healthy(&self) -> bool {
+        self.final_size <= self.cap
+    }
+
+    pub(crate) fn proves_cap_unattainable(&self) -> bool {
+        !self.is_healthy() && self.policy_floor() > self.cap
+    }
 }
 
 /// Diagnostic trace of the most recent auto-cap computation.
@@ -214,4 +243,8 @@ pub struct CapTrace {
     pub sample_count: u32,
     /// Number of recent over-cap samples ignored by auto sizing.
     pub ignored_over_cap_sample_count: u32,
+    /// Confirmed policy-protected floor used for recovery.
+    pub policy_floor: u64,
+    /// Number of consecutive runs confirming the policy floor.
+    pub policy_floor_sample_count: u32,
 }

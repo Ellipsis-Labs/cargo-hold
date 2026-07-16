@@ -9,7 +9,7 @@ use crate::gc::config::Gc;
 use crate::gc::{self, auto_cap};
 use crate::logging::Logger;
 use crate::metadata::{load_metadata, save_metadata};
-use crate::state::{CapTrace, StateMetadata};
+use crate::state::{AutoCapRun, CapTrace, StateMetadata};
 
 pub struct Heave<'a> {
     gc: GcOptions<'a>,
@@ -130,9 +130,7 @@ impl<'a> Heave<'a> {
             None
         };
 
-        let current_size = gc::calculate_directory_size(self.gc.target_dir())
-            .ok()
-            .filter(|size| *size > 0);
+        let current_size = gc::calculate_directory_size(self.gc.target_dir()).ok();
 
         let last_gc_mtime_nanos = loaded_metadata.as_ref().and_then(|m| m.last_gc_mtime_nanos);
 
@@ -164,7 +162,7 @@ impl<'a> Heave<'a> {
                 // cap moved.
                 eprintln!(
                     "Auto-selected max target size: {} (baseline {}, headroom {}, growth p90 {}%, \
-                     clamp {}, samples {}:{}, ignored over-cap {})",
+                     clamp {}, samples {}:{}, ignored over-cap {}, policy floor {} from {} run(s))",
                     gc::format_size(suggested),
                     gc::format_size(trace.baseline),
                     gc::format_size(trace.growth_budget),
@@ -172,7 +170,9 @@ impl<'a> Heave<'a> {
                     trace.clamp_reason,
                     trace.sample_source,
                     trace.sample_count,
-                    trace.ignored_over_cap_sample_count
+                    trace.ignored_over_cap_sample_count,
+                    gc::format_size(trace.policy_floor),
+                    trace.policy_floor_sample_count
                 );
             }
             cap_trace = Some(trace);
@@ -209,7 +209,21 @@ impl<'a> Heave<'a> {
             eprintln!("  Space freed: {}", gc::format_size(stats.bytes_freed));
             eprintln!("  Artifacts removed: {}", stats.artifacts_removed);
             eprintln!("  Crates cleaned: {}", stats.crates_cleaned);
-            eprintln!("  Binaries preserved: {}", stats.binaries_preserved);
+            eprintln!(
+                "  Binaries preserved: {} ({})",
+                stats.binaries_preserved,
+                gc::format_size(stats.preserved_binary_bytes)
+            );
+            eprintln!(
+                "  Artifact accounting: {} protected, {} eligible, {} retained",
+                gc::format_size(stats.protected_artifact_bytes),
+                gc::format_size(stats.eligible_artifact_bytes),
+                gc::format_size(stats.retained_artifact_bytes)
+            );
+            eprintln!(
+                "  Unrecognized bytes remaining: {} (excluded from auto-cap recovery)",
+                gc::format_size(stats.unrecognized_bytes)
+            );
             eprintln!(
                 "  Registry cleanup: {} files, {} dirs, {} freed",
                 stats.registry_files_removed,
@@ -223,11 +237,24 @@ impl<'a> Heave<'a> {
                 if let Some(overage) = auto_cap_overage
                     && overage > 0
                 {
-                    eprintln!(
-                        "  Warning: final size exceeded auto cap by {}; this run will not update \
-                         auto-sizing baselines",
-                        gc::format_size(overage)
-                    );
+                    let policy_floor = stats.policy_floor();
+                    if policy_floor > cap {
+                        eprintln!(
+                            "  Warning: auto cap was unattainable: the {} policy-protected floor \
+                             ({} previous-build artifacts, {} binaries) exceeded the cap by {}; \
+                             repeated policy floors trigger bounded recovery",
+                            gc::format_size(policy_floor),
+                            gc::format_size(stats.protected_artifact_bytes),
+                            gc::format_size(stats.preserved_binary_bytes),
+                            gc::format_size(policy_floor - cap)
+                        );
+                    } else {
+                        eprintln!(
+                            "  Warning: final size exceeded auto cap by {}; \
+                             unexplained/non-artifact overage will not raise the auto cap",
+                            gc::format_size(overage)
+                        );
+                    }
                 }
             }
 
@@ -239,29 +266,25 @@ impl<'a> Heave<'a> {
         if let Some(path) = self.gc.metadata_path() {
             let mut metadata = loaded_metadata.unwrap_or_else(StateMetadata::new);
             metadata.gc_metrics.runs = metadata.gc_metrics.runs.saturating_add(1);
-            if let Some(size) = current_size {
-                metadata.gc_metrics.seed_initial_size.get_or_insert(size);
-            }
-            auto_cap::push_bounded(
-                &mut metadata.gc_metrics.recent_initial_sizes,
-                stats.initial_size,
-            );
-            auto_cap::push_bounded(
-                &mut metadata.gc_metrics.recent_bytes_freed,
-                stats.bytes_freed,
-            );
-            auto_cap::push_bounded(
-                &mut metadata.gc_metrics.recent_final_sizes,
-                stats.final_size,
-            );
             if auto_cap_used {
                 metadata.gc_metrics.last_suggested_cap = max_size;
                 metadata.gc_metrics.last_cap_trace = cap_trace.clone();
-                if let Some(cap) = auto_cap {
+                if let Some(cap) = auto_cap
+                    && !self.gc.dry_run()
+                {
                     auto_cap::record_auto_cap_outcome(
                         &mut metadata.gc_metrics,
-                        cap,
-                        stats.final_size,
+                        AutoCapRun {
+                            cap,
+                            initial_size: stats.initial_size,
+                            final_size: stats.final_size,
+                            bytes_freed: stats.bytes_freed,
+                            protected_artifact_bytes: stats.protected_artifact_bytes,
+                            eligible_artifact_bytes: stats.eligible_artifact_bytes,
+                            retained_artifact_bytes: stats.retained_artifact_bytes,
+                            preserved_binary_bytes: stats.preserved_binary_bytes,
+                            unrecognized_bytes: stats.unrecognized_bytes,
+                        },
                     );
                 }
             }

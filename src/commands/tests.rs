@@ -5,13 +5,14 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::gc::auto_cap::{
-    HARD_CEILING_MIN_FINALS, MAX_GROWTH_FACTOR_PER_RUN_PCT, MAX_SHRINK_FACTOR_PER_RUN_PCT,
-    MIN_HEADROOM_BYTES, push_bounded, record_auto_cap_outcome, suggest_max_target_size,
+    GC_METRICS_WINDOW, MAX_GROWTH_FACTOR_PER_RUN_PCT, MAX_SHRINK_FACTOR_PER_RUN_PCT,
+    MIN_HEADROOM_BYTES, MIN_STEADY_HEADROOM_BYTES, record_auto_cap_outcome,
+    suggest_max_target_size,
 };
 use crate::metadata::{load_metadata, save_metadata};
 use crate::state::{
-    CAP_TRACE_SAMPLE_SOURCE_HEALTHY, CAP_TRACE_SAMPLE_SOURCE_LEGACY, GcMetrics, METADATA_VERSION,
-    StateMetadata,
+    AutoCapRun, CAP_TRACE_SAMPLE_SOURCE_HEALTHY, CAP_TRACE_SAMPLE_SOURCE_HELD,
+    CAP_TRACE_SAMPLE_SOURCE_POLICY_FLOOR, GcMetrics, METADATA_VERSION, StateMetadata,
 };
 
 fn setup_git_repo() -> TempDir {
@@ -185,13 +186,18 @@ fn test_stow_preserves_gc_metrics() {
     let mut existing = StateMetadata::new();
     existing.gc_metrics = GcMetrics {
         runs: 3,
-        seed_initial_size: Some(123),
-        recent_initial_sizes: vec![100, 110, 120],
-        recent_bytes_freed: vec![10, 20, 30],
+        recent_auto_cap_runs: vec![AutoCapRun {
+            cap: 456,
+            initial_size: 120,
+            final_size: 100,
+            bytes_freed: 20,
+            protected_artifact_bytes: 90,
+            eligible_artifact_bytes: 30,
+            retained_artifact_bytes: 100,
+            preserved_binary_bytes: 5,
+            unrecognized_bytes: 5,
+        }],
         last_suggested_cap: Some(456),
-        recent_final_sizes: vec![90, 95, 100],
-        recent_sizing_final_sizes: vec![90, 95],
-        recent_cap_overage_bytes: vec![4],
         last_cap_trace: Some(crate::state::CapTrace {
             baseline: 100,
             growth_budget: 20,
@@ -200,6 +206,8 @@ fn test_stow_preserves_gc_metrics() {
             sample_source: CAP_TRACE_SAMPLE_SOURCE_HEALTHY.to_string(),
             sample_count: 2,
             ignored_over_cap_sample_count: 1,
+            policy_floor: 0,
+            policy_floor_sample_count: 0,
         }),
     };
     save_metadata(&existing, &metadata_path).unwrap();
@@ -276,17 +284,11 @@ fn test_heave_records_last_gc_timestamp() {
 }
 
 #[test]
-fn test_heave_auto_cap_records_metrics() {
+fn fresh_heave_records_current_auto_cap_model() {
     let temp_dir = TempDir::new().unwrap();
     let target_dir = temp_dir.path().join("target");
     make_profile(&target_dir);
-    let metadata_path = temp_dir.path().join("cargo-hold.metadata");
-
-    let mut metadata = StateMetadata::new();
-    metadata.gc_metrics.seed_initial_size = Some(5 * 1024 * 1024);
-    metadata.gc_metrics.recent_initial_sizes = vec![5 * 1024 * 1024, 6 * 1024 * 1024];
-    metadata.gc_metrics.recent_bytes_freed = vec![0, 0];
-    save_metadata(&metadata, &metadata_path).unwrap();
+    let metadata_path = target_dir.join("cargo-hold.metadata");
 
     Heave::builder()
         .target_dir(&target_dir)
@@ -301,29 +303,19 @@ fn test_heave_auto_cap_records_metrics() {
         .heave()
         .unwrap();
 
-    let reloaded = load_metadata(&metadata_path).unwrap();
-    let metrics = &reloaded.gc_metrics;
+    let metrics = load_metadata(&metadata_path).unwrap().gc_metrics;
     assert_eq!(metrics.runs, 1);
-    assert!(
-        metrics
-            .last_suggested_cap
-            .is_some_and(|cap| cap == MIN_HEADROOM_BYTES + 6 * 1024 * 1024)
-    );
-    assert!(!metrics.recent_initial_sizes.is_empty());
-    assert_eq!(metrics.recent_sizing_final_sizes, vec![0]);
-    assert!(metrics.recent_cap_overage_bytes.is_empty());
+    assert_eq!(metrics.last_suggested_cap, Some(MIN_HEADROOM_BYTES));
+    assert_eq!(metrics.recent_auto_cap_runs.len(), 1);
+    assert_eq!(metrics.recent_auto_cap_runs[0].final_size, 0);
 }
 
 #[test]
-fn test_heave_auto_cap_can_be_disabled() {
+fn heave_auto_cap_can_be_disabled() {
     let temp_dir = TempDir::new().unwrap();
     let target_dir = temp_dir.path().join("target");
     make_profile(&target_dir);
     let metadata_path = temp_dir.path().join("cargo-hold.metadata");
-
-    let mut metadata = StateMetadata::new();
-    metadata.gc_metrics.seed_initial_size = Some(5 * 1024 * 1024);
-    save_metadata(&metadata, &metadata_path).unwrap();
 
     Heave::builder()
         .target_dir(&target_dir)
@@ -338,12 +330,13 @@ fn test_heave_auto_cap_can_be_disabled() {
         .heave()
         .unwrap();
 
-    let reloaded = load_metadata(&metadata_path).unwrap();
-    assert!(reloaded.gc_metrics.last_suggested_cap.is_none());
+    let metrics = load_metadata(&metadata_path).unwrap().gc_metrics;
+    assert!(metrics.last_suggested_cap.is_none());
+    assert!(metrics.recent_auto_cap_runs.is_empty());
 }
 
 #[test]
-fn test_heave_auto_cap_records_overage_without_sizing_sample() {
+fn heave_records_why_previous_build_makes_cap_unattainable() {
     let temp_dir = TempDir::new().unwrap();
     let target_dir = temp_dir.path().join("target");
     make_profile(&target_dir);
@@ -352,11 +345,14 @@ fn test_heave_auto_cap_records_overage_without_sizing_sample() {
     let previous_gc = SystemTime::now() - Duration::from_secs(1);
     let mut metadata = StateMetadata::new();
     metadata.last_gc_mtime_nanos = Some(previous_gc.duration_since(UNIX_EPOCH).unwrap().as_nanos());
-    metadata.gc_metrics.seed_initial_size = Some(1024);
-    metadata.gc_metrics.recent_initial_sizes = vec![1024];
-    metadata.gc_metrics.recent_final_sizes = vec![1024];
-    metadata.gc_metrics.recent_sizing_final_sizes = vec![1024];
     metadata.gc_metrics.last_suggested_cap = Some(1024);
+    metadata.gc_metrics.recent_auto_cap_runs = vec![AutoCapRun {
+        cap: 1024,
+        initial_size: 1024,
+        final_size: 1024,
+        retained_artifact_bytes: 1024,
+        ..Default::default()
+    }];
     save_metadata(&metadata, &metadata_path).unwrap();
 
     write_crate_artifact(
@@ -366,6 +362,19 @@ fn test_heave_auto_cap_records_overage_without_sizing_sample() {
         32 * 1024,
         SystemTime::now(),
     );
+    write_crate_artifact(
+        &target_dir,
+        "eligible",
+        "abcdef1234567890",
+        16 * 1024,
+        SystemTime::now() - Duration::from_secs(24 * 60 * 60),
+    );
+    fs::write(
+        target_dir.join("debug/unrecognized.bin"),
+        vec![0u8; 8 * 1024],
+    )
+    .unwrap();
+    write_preserved_binary(&target_dir.join("debug"), 4 * 1024);
 
     Heave::builder()
         .target_dir(&target_dir)
@@ -380,378 +389,455 @@ fn test_heave_auto_cap_records_overage_without_sizing_sample() {
         .heave()
         .unwrap();
 
-    let reloaded = load_metadata(&metadata_path).unwrap();
-    let metrics = &reloaded.gc_metrics;
-    assert_eq!(metrics.last_suggested_cap, Some(1024));
-    assert_eq!(metrics.recent_sizing_final_sizes, vec![1024]);
-    assert_eq!(
-        metrics.recent_cap_overage_bytes,
-        vec![metrics.recent_final_sizes.last().copied().unwrap() - 1024]
-    );
+    let metrics = load_metadata(&metadata_path).unwrap().gc_metrics;
+    let run = metrics.recent_auto_cap_runs.last().unwrap();
+    assert!(run.protected_artifact_bytes >= 32 * 1024);
+    assert!(run.eligible_artifact_bytes >= 16 * 1024);
+    assert!(run.bytes_freed >= 16 * 1024);
+    assert!(run.retained_artifact_bytes >= run.protected_artifact_bytes);
+    assert!(run.preserved_binary_bytes >= 4 * 1024);
+    assert!(run.unrecognized_bytes >= 8 * 1024);
+    assert!(run.final_size > run.cap);
+    assert!(run.policy_floor() > run.cap);
 }
 
-#[test]
-fn cold_start_from_current_skips_hard_ceiling() {
-    let metrics = GcMetrics::default();
-    let seed = 1024 * 1024;
+fn write_preserved_binary(profile_dir: &Path, size: usize) {
+    #[cfg(unix)]
+    let path = profile_dir.join("preserved-runner");
+    #[cfg(not(unix))]
+    let path = profile_dir.join("preserved-runner.exe");
 
-    let (cap, trace) = suggest_max_target_size(&metrics, Some(seed)).unwrap();
+    fs::write(&path, vec![0u8; size]).unwrap();
 
-    assert_eq!(cap, seed + MIN_HEADROOM_BYTES);
-    assert_eq!(trace.clamp_reason, "cold-start");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
 }
 
-#[test]
-fn finals_without_initials_still_respect_hard_ceiling() {
-    let gib = 1024 * 1024 * 1024;
-    let metrics = GcMetrics {
-        recent_final_sizes: vec![2 * gib],
-        ..Default::default()
+#[derive(Clone, Copy, Default)]
+struct SyntheticTarget {
+    protected_artifacts: u64,
+    preserved_binaries: u64,
+    eligible_artifacts: u64,
+    unrecognized: u64,
+}
+
+impl SyntheticTarget {
+    fn total(self) -> u64 {
+        self.protected_artifacts
+            .saturating_add(self.preserved_binaries)
+            .saturating_add(self.eligible_artifacts)
+            .saturating_add(self.unrecognized)
+    }
+}
+
+fn synthetic_voyage(metrics: &mut GcMetrics, target: SyntheticTarget) -> AutoCapRun {
+    let initial_size = target.total();
+
+    let (cap, trace) = suggest_max_target_size(metrics, Some(initial_size)).unwrap();
+    let bytes_freed = initial_size
+        .saturating_sub(cap)
+        .min(target.eligible_artifacts);
+    let run = AutoCapRun {
+        cap,
+        initial_size,
+        final_size: initial_size - bytes_freed,
+        bytes_freed,
+        protected_artifact_bytes: target.protected_artifacts,
+        eligible_artifact_bytes: target.eligible_artifacts,
+        retained_artifact_bytes: target
+            .protected_artifacts
+            .saturating_add(target.eligible_artifacts.saturating_sub(bytes_freed)),
+        preserved_binary_bytes: target.preserved_binaries,
+        unrecognized_bytes: target.unrecognized,
     };
-
-    let (cap, trace) = suggest_max_target_size(&metrics, Some(gib)).unwrap();
-
-    assert_eq!(cap, 4 * gib);
-    assert_eq!(trace.clamp_reason, "cold-start");
+    metrics.last_suggested_cap = Some(cap);
+    metrics.last_cap_trace = Some(trace);
+    record_auto_cap_outcome(metrics, run.clone());
+    run
 }
 
-#[test]
-fn zero_finals_shrink_slowly_from_prev_cap() {
-    let gib = 1024 * 1024 * 1024;
-    let metrics = mk_metrics_with_finals(&[0, 0], &[0, 0], &[0, 0], Some(10 * gib));
-
-    let (cap, trace) = suggest_max_target_size(&metrics, Some(10 * gib)).unwrap();
-
-    let max_down = 10 * gib - (10 * gib * MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100;
-    assert_eq!(cap, max_down);
-    assert_eq!(trace.clamp_reason, "clamped:-shrink");
-}
-
-#[test]
-fn tiny_restore_shrinks_by_max_down_not_below_headroom_floor() {
-    let gib = 1024 * 1024 * 1024;
-    let tiny = 50 * 1024 * 1024;
-    let metrics = mk_metrics_with_finals(&[tiny, tiny], &[0, 0], &[tiny, tiny], Some(10 * gib));
-
-    let (cap, trace) = suggest_max_target_size(&metrics, Some(tiny)).unwrap();
-
-    let max_down = 10 * gib - (10 * gib * MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100;
-    assert_eq!(cap, max_down);
-    assert_eq!(trace.clamp_reason, "clamped:-shrink");
-}
-
-fn mk_metrics(initials: &[u64], freed: &[u64], last_cap: Option<u64>) -> GcMetrics {
+fn metrics_with_healthy_run(cap: u64, final_size: u64) -> GcMetrics {
     GcMetrics {
-        runs: initials.len() as u32,
-        seed_initial_size: initials.first().copied(),
-        recent_initial_sizes: initials.to_vec(),
-        recent_bytes_freed: freed.to_vec(),
-        last_suggested_cap: last_cap,
+        last_suggested_cap: Some(cap),
+        recent_auto_cap_runs: vec![AutoCapRun {
+            cap,
+            initial_size: final_size,
+            final_size,
+            retained_artifact_bytes: final_size,
+            ..Default::default()
+        }],
         ..Default::default()
     }
 }
 
-fn mk_metrics_with_finals(
-    initials: &[u64],
-    freed: &[u64],
-    finals: &[u64],
-    last_cap: Option<u64>,
-) -> GcMetrics {
-    let mut metrics = mk_metrics(initials, freed, last_cap);
-    metrics.recent_final_sizes = finals.to_vec();
-    metrics
-}
+#[test]
+fn metadata_only_then_large_fallback_build_recovers_to_protected_working_set() {
+    let mib = 1024 * 1024;
+    let gib = 1024 * mib;
+    let mut metrics = GcMetrics::default();
 
-fn with_sizing_finals(mut metrics: GcMetrics, finals: &[u64]) -> GcMetrics {
-    metrics.recent_sizing_final_sizes = finals.to_vec();
-    metrics
-}
+    // Empty/metadata-only cold start: voyage runs before the first real build.
+    let cold = synthetic_voyage(
+        &mut metrics,
+        SyntheticTarget {
+            unrecognized: mib,
+            ..Default::default()
+        },
+    );
+    assert_eq!(cold.cap, MIN_HEADROOM_BYTES + mib);
+    assert_eq!(cold.bytes_freed, 0);
 
-fn with_cap_overages(mut metrics: GcMetrics, overages: &[u64]) -> GcMetrics {
-    metrics.recent_cap_overage_bytes = overages.to_vec();
-    metrics
+    // Build/test grows the saved target to 19.9 GiB. The fallback restore then
+    // runs voyage before building, exactly like Phoenix.
+    let first_restore = synthetic_voyage(
+        &mut metrics,
+        SyntheticTarget {
+            protected_artifacts: 10 * gib + 9 * gib / 10,
+            eligible_artifacts: 6 * gib + gib / 2,
+            unrecognized: 2 * gib + gib / 2,
+            ..Default::default()
+        },
+    );
+    assert!(first_restore.protected_artifact_bytes > first_restore.cap);
+    assert_eq!(first_restore.bytes_freed, 6 * gib + gib / 2);
+
+    // Artifacts created after the prior voyage are protected on the next
+    // fallback restore. A second proof confirms that the old cap is impossible.
+    let second_restore = synthetic_voyage(
+        &mut metrics,
+        SyntheticTarget {
+            protected_artifacts: 17 * gib + 2 * gib / 5,
+            unrecognized: 2 * gib + gib / 2,
+            ..Default::default()
+        },
+    );
+    assert_eq!(second_restore.cap, first_restore.cap);
+    assert!(second_restore.protected_artifact_bytes > second_restore.cap);
+
+    let recovered = synthetic_voyage(
+        &mut metrics,
+        SyntheticTarget {
+            protected_artifacts: 17 * gib + 2 * gib / 5,
+            unrecognized: 2 * gib + gib / 2,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        metrics.last_cap_trace.as_ref().unwrap().sample_source,
+        CAP_TRACE_SAMPLE_SOURCE_POLICY_FLOOR
+    );
+    assert_eq!(
+        recovered.cap,
+        (10 * gib + 9 * gib / 10) + MIN_HEADROOM_BYTES
+    );
+    assert_eq!(recovered.bytes_freed, 0);
+
+    // The growing protected floor is confirmed again and recovery advances to
+    // the realistic working set, still based only on recognized protected bytes.
+    let recovered_again = synthetic_voyage(
+        &mut metrics,
+        SyntheticTarget {
+            protected_artifacts: 17 * gib + 2 * gib / 5,
+            unrecognized: 2 * gib + gib / 2,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        recovered_again.cap,
+        (17 * gib + 2 * gib / 5) + MIN_HEADROOM_BYTES
+    );
+    assert_eq!(recovered_again.bytes_freed, 0);
+
+    // More than a complete chronological window cannot resurrect the ancient
+    // metadata-only healthy sample or restart destructive cleanup.
+    for _ in 0..=GC_METRICS_WINDOW {
+        let run = synthetic_voyage(
+            &mut metrics,
+            SyntheticTarget {
+                protected_artifacts: 17 * gib + 2 * gib / 5,
+                unrecognized: 2 * gib + gib / 2,
+                ..Default::default()
+            },
+        );
+        assert_eq!(run.bytes_freed, 0);
+        assert_eq!(run.cap, recovered_again.cap);
+    }
+    assert_eq!(metrics.recent_auto_cap_runs.len(), GC_METRICS_WINDOW);
+    assert!(
+        metrics
+            .recent_auto_cap_runs
+            .iter()
+            .all(|run| run.initial_size > gib)
+    );
 }
 
 #[test]
-fn hard_ceiling_requires_min_history() {
+fn full_window_of_protected_overages_cannot_keep_an_ancient_healthy_sample_alive() {
     let gib = 1024 * 1024 * 1024;
-    let metrics = GcMetrics {
-        recent_final_sizes: vec![10 * gib; HARD_CEILING_MIN_FINALS],
-        recent_initial_sizes: vec![40 * gib; HARD_CEILING_MIN_FINALS],
-        recent_bytes_freed: vec![30 * gib; HARD_CEILING_MIN_FINALS],
+    let tiny_cap = 257 * 1024 * 1024;
+    let mut metrics = GcMetrics {
+        last_suggested_cap: Some(tiny_cap),
+        recent_auto_cap_runs: vec![AutoCapRun {
+            cap: tiny_cap,
+            initial_size: 1024 * 1024,
+            final_size: 1024 * 1024,
+            unrecognized_bytes: 1024 * 1024,
+            ..Default::default()
+        }],
         ..Default::default()
     };
 
-    let (cap, trace) = suggest_max_target_size(&metrics, Some(12 * gib)).unwrap();
-
-    assert_eq!(cap, 20 * gib);
-    assert_eq!(trace.clamp_reason, "hard-ceiling");
-}
-
-#[test]
-fn hard_ceiling_does_not_bypass_shrink_clamp() {
-    let gib = 1024 * 1024 * 1024;
-    let metrics = GcMetrics {
-        last_suggested_cap: Some(10 * gib),
-        recent_final_sizes: vec![gib; HARD_CEILING_MIN_FINALS],
-        recent_initial_sizes: vec![40 * gib; HARD_CEILING_MIN_FINALS],
-        recent_bytes_freed: vec![39 * gib; HARD_CEILING_MIN_FINALS],
-        ..Default::default()
-    };
-
-    let (cap, trace) = suggest_max_target_size(&metrics, Some(12 * gib)).unwrap();
-
-    let max_down = 10 * gib - (10 * gib * MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100;
-    assert_eq!(cap, max_down);
-    assert_eq!(trace.clamp_reason, "clamped:-shrink");
-}
-
-#[test]
-fn steady_usage_stays_near_baseline() {
-    // Stable finals ~10 GiB, prior cap 12 GiB.
-    let initials = [12 * 1024 * 1024 * 1024];
-    let freed = [2 * 1024 * 1024 * 1024]; // final = 10 GiB
-    let metrics = mk_metrics(&initials, &freed, Some(12 * 1024 * 1024 * 1024));
-
-    let (cap, _) = suggest_max_target_size(&metrics, Some(initials[0])).unwrap();
-    // Deadband allows shrink within clamp; 10% down from 12 GiB = 10.8 GiB.
-    let expected =
-        12 * 1024 * 1024 * 1024 - (12 * 1024 * 1024 * 1024 * MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100;
-    assert_eq!(cap, expected);
-}
-
-#[test]
-fn slow_growth_advances_gradually() {
-    // Finals grow 0.5 GiB per run; last cap 12 GiB.
-    let g = 1024 * 1024 * 1024 / 2; // 0.5 GiB
-    let finals = [10 * 1024 * 1024 * 1024, 10 * 1024 * 1024 * 1024 + g];
-    let initials = [
-        finals[0] + 2 * 1024 * 1024 * 1024,
-        finals[1] + 2 * 1024 * 1024 * 1024,
-    ];
-    let freed = [2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024];
-    let metrics = mk_metrics(&initials, &freed, Some(12 * 1024 * 1024 * 1024));
-
-    let (cap, _) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
-
-    // Growth is within deadband; cap holds steady at 12 GiB.
-    assert_eq!(cap, 12 * 1024 * 1024 * 1024);
-}
-
-#[test]
-fn flat_usage_still_ratchets_up_from_headroom_floor() {
-    let gib = 1024 * 1024 * 1024;
-    // Two runs that end right at the 10 GiB cap; no real growth.
-    let initials = [12 * gib, 12 * gib];
-    let freed = [2 * gib, 2 * gib]; // finals stay 10 GiB both times
-    let last_cap = 10 * gib;
-    let metrics = mk_metrics(&initials, &freed, Some(last_cap));
-
-    let (cap, _) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
-
-    // Deadband prevents drift; cap should stay at 10 GiB.
-    assert_eq!(cap, last_cap);
-}
-
-#[test]
-fn repeated_caps_keep_increasing_even_without_growth() {
-    let gib = 1024 * 1024 * 1024;
-    // Prior run already ratcheted to 11 GiB; usage still flat at the cap.
-    let initials = [13 * gib, 13 * gib];
-    let freed = [2 * gib, 2 * gib]; // finals stay 11 GiB
-    let last_cap = 11 * gib;
-    let metrics = mk_metrics(&initials, &freed, Some(last_cap));
-
-    let (cap, trace) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
-
-    // Deadband should keep the cap pinned at 11 GiB.
-    assert_eq!(cap, last_cap);
-    assert_eq!(trace.clamp_reason, "deadband/hold");
-}
-
-#[test]
-fn non_target_cleanup_does_not_inflate_growth() {
-    let gib = 1024 * 1024 * 1024;
-    // Target sits steady at 10 GiB, but a noisy registry cleanup reports 5 GiB
-    // freed.
-    let finals = [10 * gib, 10 * gib];
-    let initials = [10 * gib, 10 * gib];
-    let freed = [5 * gib, 0];
-    let last_cap = 10 * gib;
-    let metrics = mk_metrics_with_finals(&initials, &freed, &finals, Some(last_cap));
-
-    let (cap, trace) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
-
-    assert_eq!(cap, last_cap);
-    assert_eq!(trace.clamp_reason, "deadband/hold");
-}
-
-#[test]
-fn small_noise_stays_flat_with_deadband() {
-    let gib = 1024 * 1024 * 1024;
-    // Finals bounce by <1% between runs; prior cap 10 GiB.
-    let finals = [10 * gib, 10 * gib + 50 * 1024 * 1024];
-    let initials = [finals[0] + 2 * gib, finals[1] + 2 * gib];
-    let freed = [2 * gib, 2 * gib];
-    let last_cap = 10 * gib;
-    let metrics = mk_metrics(&initials, &freed, Some(last_cap));
-
-    let (cap, _) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
-
-    assert_eq!(cap, last_cap);
-}
-
-#[test]
-fn sustained_growth_moves_up_within_clamp() {
-    let gib = 1024 * 1024 * 1024;
-    // Finals grow meaningfully; cap should ratchet up but stay within +10%.
-    let finals = [12 * gib, 14 * gib];
-    let initials = [finals[0] + 2 * gib, finals[1] + 2 * gib];
-    let freed = [2 * gib, 2 * gib];
-    let last_cap = 12 * gib;
-    let metrics = with_sizing_finals(mk_metrics(&initials, &freed, Some(last_cap)), &finals);
-
-    let (cap, _) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
-
-    let expected = last_cap + (last_cap * MAX_GROWTH_FACTOR_PER_RUN_PCT) / 100;
-    assert_eq!(cap, expected);
-}
-
-#[test]
-fn over_cap_legacy_finals_are_ignored_for_baseline() {
-    let gib = 1024 * 1024 * 1024;
-    let last_cap = 10 * gib;
-    let metrics = with_cap_overages(
-        mk_metrics_with_finals(
-            &[12 * gib, 32 * gib],
-            &[2 * gib, 2 * gib],
-            &[10 * gib, 30 * gib],
-            Some(last_cap),
-        ),
-        &[20 * gib],
-    );
-
-    let (cap, trace) = suggest_max_target_size(&metrics, Some(32 * gib)).unwrap();
-
-    assert_eq!(cap, last_cap);
-    assert_eq!(trace.sample_source, CAP_TRACE_SAMPLE_SOURCE_LEGACY);
-    assert_eq!(trace.sample_count, 1);
-    assert_eq!(trace.ignored_over_cap_sample_count, 1);
-}
-
-#[test]
-fn repeated_over_cap_runs_without_healthy_samples_do_not_grow_cap() {
-    let gib = 1024 * 1024 * 1024;
-    let last_cap = 10 * gib;
-    let metrics = with_cap_overages(
-        mk_metrics_with_finals(
-            &[30 * gib, 31 * gib],
-            &[0, 0],
-            &[30 * gib, 31 * gib],
-            Some(last_cap),
-        ),
-        &[20 * gib, 21 * gib],
-    );
-
-    let (cap, trace) = suggest_max_target_size(&metrics, Some(31 * gib)).unwrap();
-
-    assert_eq!(cap, last_cap);
-    assert_eq!(trace.sample_source, CAP_TRACE_SAMPLE_SOURCE_LEGACY);
-    assert_eq!(trace.ignored_over_cap_sample_count, 2);
-}
-
-#[test]
-fn healthy_sizing_samples_drive_bounded_growth() {
-    let gib = 1024 * 1024 * 1024;
-    let last_cap = 12 * gib;
-    let metrics = with_cap_overages(
-        with_sizing_finals(
-            mk_metrics_with_finals(
-                &[12 * gib, 20 * gib],
-                &[2 * gib, 2 * gib],
-                &[10 * gib, 30 * gib],
-                Some(last_cap),
-            ),
-            &[12 * gib, 14 * gib],
-        ),
-        &[18 * gib],
-    );
-
-    let (cap, trace) = suggest_max_target_size(&metrics, Some(30 * gib)).unwrap();
-
-    let expected = last_cap + (last_cap * MAX_GROWTH_FACTOR_PER_RUN_PCT) / 100;
-    assert_eq!(cap, expected);
-    assert_eq!(trace.sample_source, CAP_TRACE_SAMPLE_SOURCE_HEALTHY);
-    assert_eq!(trace.sample_count, 2);
-    assert_eq!(trace.ignored_over_cap_sample_count, 1);
-}
-
-#[test]
-fn repeated_large_overages_do_not_ratchet_auto_cap() {
-    let gib = 1024 * 1024 * 1024;
-    let healthy_final = 10 * gib;
-    let bloated_final = 256 * gib;
-    let mut metrics = with_sizing_finals(
-        mk_metrics_with_finals(&[12 * gib], &[2 * gib], &[healthy_final], Some(12 * gib)),
-        &[healthy_final],
-    );
-
-    let mut previous_cap = metrics.last_suggested_cap.unwrap();
-    for _ in 0..8 {
-        let (cap, trace) = suggest_max_target_size(&metrics, Some(bloated_final)).unwrap();
-        assert!(
-            cap <= previous_cap,
-            "over-cap finals must not increase cap: previous={previous_cap}, next={cap}"
+    for _ in 0..(GC_METRICS_WINDOW + 5) {
+        record_auto_cap_outcome(
+            &mut metrics,
+            AutoCapRun {
+                cap: tiny_cap,
+                initial_size: 20 * gib,
+                final_size: 13 * gib,
+                bytes_freed: 7 * gib,
+                protected_artifact_bytes: 11 * gib,
+                eligible_artifact_bytes: 7 * gib,
+                retained_artifact_bytes: 11 * gib,
+                unrecognized_bytes: 2 * gib,
+                ..Default::default()
+            },
         );
-        assert_eq!(trace.sample_source, CAP_TRACE_SAMPLE_SOURCE_HEALTHY);
-        assert_eq!(trace.sample_count, 1);
-        assert!(
-            cap < bloated_final / 10,
-            "cap should stay tied to healthy baseline, not observed bloat"
-        );
-
-        push_bounded(&mut metrics.recent_initial_sizes, bloated_final);
-        push_bounded(&mut metrics.recent_bytes_freed, 0);
-        push_bounded(&mut metrics.recent_final_sizes, bloated_final);
-        metrics.last_suggested_cap = Some(cap);
-        record_auto_cap_outcome(&mut metrics, cap, bloated_final);
-        previous_cap = cap;
     }
 
-    assert_eq!(metrics.recent_sizing_final_sizes, vec![healthy_final]);
-    assert_eq!(metrics.recent_cap_overage_bytes.len(), 8);
-    assert!(metrics.recent_final_sizes.contains(&bloated_final));
-}
-
-#[test]
-fn spike_is_bounded_by_hard_ceiling() {
-    // One large spike to 30 GiB, finals previously 10 GiB.
-    let initials = [12 * 1024 * 1024 * 1024, 32 * 1024 * 1024 * 1024];
-    let freed = [2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024]; // finals 10 GiB, 30 GiB
-    let metrics = with_sizing_finals(
-        mk_metrics(&initials, &freed, Some(12 * 1024 * 1024 * 1024)),
-        &[10 * 1024 * 1024 * 1024, 30 * 1024 * 1024 * 1024],
+    assert_eq!(metrics.recent_auto_cap_runs.len(), GC_METRICS_WINDOW);
+    assert!(
+        metrics
+            .recent_auto_cap_runs
+            .iter()
+            .all(|run| run.final_size > run.cap)
     );
 
-    let (cap, _trace) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
-
-    // Per-run clamp from 12 GiB limits growth to +10%.
-    let expected =
-        12 * 1024 * 1024 * 1024 + (12 * 1024 * 1024 * 1024 * MAX_GROWTH_FACTOR_PER_RUN_PCT) / 100;
-    assert_eq!(cap, expected);
+    let (cap, trace) = suggest_max_target_size(&metrics, Some(20 * gib)).unwrap();
+    assert_eq!(cap, 11 * gib + MIN_HEADROOM_BYTES);
+    assert_eq!(trace.sample_source, CAP_TRACE_SAMPLE_SOURCE_POLICY_FLOOR);
+    assert_eq!(trace.sample_count, GC_METRICS_WINDOW as u32);
 }
 
 #[test]
-fn shrink_moves_down_slowly_not_below_baseline() {
-    // Finals drop from 10 GiB to 6 GiB; prior cap 14 GiB.
-    let initials = [12 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024];
-    let freed = [2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024]; // finals 10 GiB, 6 GiB
-    let metrics = mk_metrics(&initials, &freed, Some(14 * 1024 * 1024 * 1024));
+fn repeated_unrecognized_256_gib_bloat_never_ratchets_cap() {
+    let gib = 1024 * 1024 * 1024;
+    let mut metrics = metrics_with_healthy_run(12 * gib, 10 * gib);
 
-    let (cap, _) = suggest_max_target_size(&metrics, Some(initials[1])).unwrap();
+    let mut held_cap = None;
+    for _ in 0..(GC_METRICS_WINDOW * 2) {
+        let run = synthetic_voyage(
+            &mut metrics,
+            SyntheticTarget {
+                unrecognized: 256 * gib,
+                ..Default::default()
+            },
+        );
+        assert!(run.cap <= 12 * gib);
+        if let Some(expected) = held_cap {
+            assert_eq!(run.cap, expected);
+            assert_eq!(
+                metrics.last_cap_trace.as_ref().unwrap().sample_source,
+                CAP_TRACE_SAMPLE_SOURCE_HELD
+            );
+        } else {
+            held_cap = Some(run.cap);
+        }
+        assert_eq!(metrics.last_cap_trace.as_ref().unwrap().policy_floor, 0);
+    }
+    assert_eq!(metrics.recent_auto_cap_runs.len(), GC_METRICS_WINDOW);
+}
 
-    // Cap should decline by at most 10% per run, but never below baseline (6 GiB).
-    let min_cap =
-        14 * 1024 * 1024 * 1024 - (14 * 1024 * 1024 * 1024 * MAX_SHRINK_FACTOR_PER_RUN_PCT) / 100;
-    assert_eq!(cap, min_cap);
+#[test]
+fn repeated_eligible_256_gib_bloat_only_moves_cap_through_normal_clamps() {
+    let gib = 1024 * 1024 * 1024;
+    let mut metrics = metrics_with_healthy_run(12 * gib, 10 * gib);
+
+    let mut previous_cap = 12 * gib;
+    let mut consecutive_holds = 0;
+    for _ in 0..(GC_METRICS_WINDOW * 3) {
+        let run = synthetic_voyage(
+            &mut metrics,
+            SyntheticTarget {
+                eligible_artifacts: 256 * gib,
+                ..Default::default()
+            },
+        );
+        assert!(
+            run.cap
+                <= previous_cap.saturating_add(previous_cap * MAX_GROWTH_FACTOR_PER_RUN_PCT / 100)
+        );
+        assert_ne!(
+            metrics.last_cap_trace.as_ref().unwrap().sample_source,
+            CAP_TRACE_SAMPLE_SOURCE_POLICY_FLOOR
+        );
+        consecutive_holds = if run.cap == previous_cap {
+            consecutive_holds + 1
+        } else {
+            0
+        };
+        previous_cap = run.cap;
+    }
+
+    // The directory size itself never becomes a baseline: only the post-GC
+    // final does, so repeated eligible bloat settles for a complete history
+    // window instead of compounding indefinitely.
+    assert!(consecutive_holds >= GC_METRICS_WINDOW);
+}
+
+#[test]
+fn isolated_policy_floor_spike_does_not_trigger_recovery() {
+    let gib = 1024 * 1024 * 1024;
+    let mut metrics = metrics_with_healthy_run(12 * gib, 10 * gib);
+
+    let spike = synthetic_voyage(
+        &mut metrics,
+        SyntheticTarget {
+            protected_artifacts: 128 * gib,
+            preserved_binaries: 128 * gib,
+            ..Default::default()
+        },
+    );
+    assert!(spike.cap <= 12 * gib);
+
+    let first_normal = synthetic_voyage(
+        &mut metrics,
+        SyntheticTarget {
+            protected_artifacts: 10 * gib,
+            ..Default::default()
+        },
+    );
+    assert_eq!(first_normal.cap, spike.cap);
+    assert_eq!(
+        metrics.last_cap_trace.as_ref().unwrap().sample_source,
+        CAP_TRACE_SAMPLE_SOURCE_HELD
+    );
+
+    let second_normal = synthetic_voyage(
+        &mut metrics,
+        SyntheticTarget {
+            protected_artifacts: 10 * gib,
+            ..Default::default()
+        },
+    );
+    assert!(second_normal.cap <= spike.cap);
+    assert_ne!(
+        metrics.last_cap_trace.as_ref().unwrap().sample_source,
+        CAP_TRACE_SAMPLE_SOURCE_POLICY_FLOOR
+    );
+}
+
+#[test]
+fn preserved_binaries_contribute_to_confirmed_policy_floor() {
+    let gib = 1024 * 1024 * 1024;
+    let mut metrics = metrics_with_healthy_run(4 * gib, 4 * gib);
+    let working_set = SyntheticTarget {
+        protected_artifacts: 6 * gib,
+        preserved_binaries: 5 * gib,
+        ..Default::default()
+    };
+
+    let first = synthetic_voyage(&mut metrics, working_set);
+    let second = synthetic_voyage(&mut metrics, working_set);
+    assert_eq!(first.cap, 4 * gib);
+    assert_eq!(second.cap, 4 * gib);
+    assert_eq!(second.policy_floor(), 11 * gib);
+
+    let recovered = synthetic_voyage(&mut metrics, working_set);
+    assert_eq!(recovered.cap, 11 * gib + MIN_HEADROOM_BYTES);
+    assert_eq!(
+        metrics.last_cap_trace.as_ref().unwrap().sample_source,
+        CAP_TRACE_SAMPLE_SOURCE_POLICY_FLOOR
+    );
+    assert_eq!(
+        metrics.last_cap_trace.as_ref().unwrap().policy_floor,
+        11 * gib
+    );
+}
+
+#[test]
+fn stable_healthy_runs_do_not_oscillate_and_an_isolated_spike_does_not_stick() {
+    let gib = 1024 * 1024 * 1024;
+    let mut metrics = metrics_with_healthy_run(12 * gib, 10 * gib);
+
+    let mut previous_cap = 12 * gib;
+    for _ in 0..GC_METRICS_WINDOW {
+        let run = synthetic_voyage(
+            &mut metrics,
+            SyntheticTarget {
+                protected_artifacts: 10 * gib,
+                ..Default::default()
+            },
+        );
+        assert!(run.cap <= previous_cap);
+        assert!(previous_cap - run.cap <= previous_cap * MAX_SHRINK_FACTOR_PER_RUN_PCT / 100);
+        previous_cap = run.cap;
+    }
+    let steady_cap = previous_cap;
+    assert!(steady_cap >= 10 * gib + MIN_STEADY_HEADROOM_BYTES);
+
+    let spike = synthetic_voyage(
+        &mut metrics,
+        SyntheticTarget {
+            unrecognized: 256 * gib,
+            ..Default::default()
+        },
+    );
+    assert_eq!(spike.cap, steady_cap);
+
+    for _ in 0..GC_METRICS_WINDOW {
+        let run = synthetic_voyage(
+            &mut metrics,
+            SyntheticTarget {
+                protected_artifacts: 10 * gib,
+                ..Default::default()
+            },
+        );
+        assert!(run.cap <= steady_cap);
+    }
+}
+
+#[test]
+fn healthy_growth_remains_bounded_per_run() {
+    let gib = 1024 * 1024 * 1024;
+    let mut metrics = GcMetrics {
+        last_suggested_cap: Some(12 * gib),
+        recent_auto_cap_runs: vec![
+            AutoCapRun {
+                cap: 12 * gib,
+                initial_size: 10 * gib,
+                final_size: 10 * gib,
+                retained_artifact_bytes: 10 * gib,
+                ..Default::default()
+            },
+            AutoCapRun {
+                cap: 12 * gib,
+                initial_size: 12 * gib,
+                final_size: 12 * gib,
+                retained_artifact_bytes: 12 * gib,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+
+    let run = synthetic_voyage(
+        &mut metrics,
+        SyntheticTarget {
+            protected_artifacts: 13 * gib,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        run.cap,
+        12 * gib + 12 * gib * MAX_GROWTH_FACTOR_PER_RUN_PCT / 100
+    );
+    assert_eq!(
+        metrics.last_cap_trace.as_ref().unwrap().sample_source,
+        CAP_TRACE_SAMPLE_SOURCE_HEALTHY
+    );
 }
