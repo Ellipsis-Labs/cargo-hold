@@ -29,6 +29,20 @@ pub(crate) fn parse_size(s: &str) -> Result<u64> {
         HoldError::InvalidMetadataSize(s.to_string(), "Invalid number format".to_string())
     })?;
 
+    // `as u64` saturates, so a negative value would land on 0 rather than fail. A
+    // cap of 0 is not a no-op here: `select_for_size` reads it as "free
+    // everything", so a typo like `-5G` would quietly clear the cache instead
+    // of being rejected.
+    // `is_sign_negative` rather than `< 0.0`: `-0` and `-0.0` parse to negative
+    // zero, for which `< 0.0` is false, so `-0G` would otherwise still reach
+    // the cast and land on the same dangerous 0.
+    if !base.is_finite() || base.is_sign_negative() {
+        return Err(HoldError::InvalidMetadataSize(
+            s.to_string(),
+            "Size must be a non-negative, finite number".to_string(),
+        ));
+    }
+
     Ok((base * multiplier as f64) as u64)
 }
 
@@ -96,6 +110,32 @@ mod tests {
         assert!(parse_size("").is_err());
         assert!(parse_size("abc").is_err());
         assert!(parse_size("100X").is_err());
+    }
+
+    #[test]
+    fn parse_size_rejects_negative_values_instead_of_clamping_to_zero() {
+        // `(-5.0 * 1024f64.powi(3)) as u64` is 0, and a max size of 0 makes
+        // `select_for_size` free the whole cache, so this has to be an error.
+        // `-0` and `-0.0` parse to negative zero, where `< 0.0` is false: an explicitly
+        // negative input must not reach the cast and become the 0 cap either.
+        for input in [
+            "-1", "-5G", "-0.5G", "-500M", "-1T", "-1KiB", "-0", "-0.0", "-0G",
+        ] {
+            let result = parse_size(input);
+            assert!(
+                result.is_err(),
+                "{input} should be rejected, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_size_still_accepts_zero_and_the_boundary() {
+        // Rejecting negatives must not reject a deliberate 0, which is a valid
+        // (if aggressive) cap, nor anything that parsed before.
+        assert_eq!(parse_size("0").unwrap(), 0);
+        assert_eq!(parse_size("0G").unwrap(), 0);
+        assert_eq!(parse_size("0.0M").unwrap(), 0);
     }
 
     #[test]
