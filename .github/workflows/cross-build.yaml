@@ -26,7 +26,6 @@ jobs:
           - { arch: x86_64-linux, runner: ubuntu-latest }
           - { arch: aarch64-linux, runner: ubuntu-latest }
           - { arch: aarch64-darwin, runner: macos-latest }
-          - { arch: x86_64-darwin, runner: macos-latest }
     steps:
       - uses: actions/checkout@v7
 
@@ -61,9 +60,6 @@ jobs:
               ;;
             "aarch64-linux")
               echo "rust_target=aarch64-unknown-linux-musl" >> $GITHUB_OUTPUT
-              ;;
-            "x86_64-darwin")
-              echo "rust_target=x86_64-apple-darwin" >> $GITHUB_OUTPUT
               ;;
             "aarch64-darwin")
               echo "rust_target=aarch64-apple-darwin" >> $GITHUB_OUTPUT
