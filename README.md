@@ -346,9 +346,14 @@ This all-in-one command is perfect for CI pipelines that need both timestamp man
 - `--max-target-size <SIZE>`: Maximum target directory size for garbage collection
 - `--gc-dry-run`: Preview what would be cleaned without deleting (GC only)
 - `--gc-debug`: Show detailed debug output during garbage collection
+- `--gc-min-interval-hours <HOURS>`: Skip GC until this many hours after the last GC (also `CARGO_HOLD_GC_MIN_INTERVAL_HOURS`); anchor always runs. Without this option, GC runs every time.
+- `--force-gc`: Bypass the cooldown (still respects `--gc-dry-run`)
 - `--preserve-cargo-binaries <NAMES>`: Additional binaries to preserve in ~/.cargo/bin
 - `--gc-auto-max-target-size`: Enable/disable auto sizing (default: enabled; pass `=false` to disable)
 - `--gc-age-threshold-days <DAYS>`: Age threshold for garbage collection (default: 7)
+
+Skipping GC preserves the last GC timestamp and sizing history. The first run
+without a previous GC timestamp runs GC normally.
 
 **Perfect for CI because:**
 
@@ -368,6 +373,9 @@ cargo hold voyage --max-target-size 2G --gc-dry-run
 
 # Preserve specific tools during cleanup
 cargo hold voyage --preserve-cargo-binaries cargo-nextest,cargo-llvm-cov
+
+# Always anchor, but run GC at most once per 24 hours
+cargo hold voyage --gc-min-interval-hours 24
 
 # Use a 14-day age threshold instead of default 7
 cargo hold voyage --gc-age-threshold-days 14

@@ -127,3 +127,26 @@ fn test_normalize_path() {
     assert!(normalized.is_absolute());
     assert!(normalized.ends_with("a/c/e"));
 }
+
+#[test]
+fn voyage_gc_cooldown_flags() {
+    let cli = Cli::try_parse_from([
+        "cargo-hold",
+        "voyage",
+        "--gc-min-interval-hours",
+        "24",
+        "--force-gc",
+    ])
+    .unwrap();
+    assert!(matches!(
+        cli.command(),
+        Commands::Voyage {
+            gc_min_interval_hours: Some(24),
+            force_gc: true,
+            ..
+        }
+    ));
+    assert!(
+        Cli::try_parse_from(["cargo-hold", "voyage", "--gc-min-interval-hours", "-1",]).is_err()
+    );
+}

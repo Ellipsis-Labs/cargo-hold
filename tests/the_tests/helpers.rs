@@ -217,6 +217,8 @@ pub fn run_voyage(temp_dir: &TempDir, verbose: u8) -> Result<()> {
             gc_debug: false,
             gc_age_threshold_days: 7,
             gc_auto_max_target_size: true,
+            gc_min_interval_hours: None,
+            force_gc: false,
         },
         temp_dir,
         verbose,

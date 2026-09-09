@@ -437,6 +437,15 @@ pub enum Commands {
         #[command(flatten)]
         gc: GcArgs,
 
+        /// Minimum hours between GC runs; anchor always runs (default: no
+        /// cooldown)
+        #[arg(long, env = "CARGO_HOLD_GC_MIN_INTERVAL_HOURS")]
+        gc_min_interval_hours: Option<u64>,
+
+        /// Run GC even within the cooldown (still respects --gc-dry-run)
+        #[arg(long)]
+        force_gc: bool,
+
         /// Show what would be deleted without actually deleting
         #[arg(long, env = "CARGO_HOLD_GC_DRY_RUN")]
         gc_dry_run: bool,
@@ -460,8 +469,7 @@ impl Cli {
     pub fn parse_args() -> Self {
         let args: Vec<String> = std::env::args().collect();
 
-        // When invoked as `cargo hold`, cargo passes "hold" as the first argument
-        // We need to skip it to parse the actual subcommand
+        // Skip Cargo's leading "hold" argument to parse the actual subcommand.
         if args.len() >= 2 && args[1] == "hold" {
             // Skip the "hold" argument by reconstructing args without it
             let mut new_args = vec![args[0].clone()]; // program name

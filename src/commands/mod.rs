@@ -79,10 +79,14 @@ pub fn execute_with_dir(cli: &Cli, working_dir: Option<&Path>) -> Result<()> {
             gc_debug,
             gc_age_threshold_days,
             gc_auto_max_target_size,
+            gc_min_interval_hours,
+            force_gc,
         } => Voyage::builder()
             .metadata_path(&metadata_path)
             .target_dir(&target_dir)
             .max_target_size(gc.max_target_size())
+            .gc_min_interval_hours(*gc_min_interval_hours)
+            .force_gc(*force_gc)
             .gc_dry_run(*gc_dry_run)
             .gc_debug(*gc_debug)
             .preserve_cargo_binaries(gc.preserve_cargo_binaries())
