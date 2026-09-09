@@ -1,4 +1,4 @@
-//! Voyage command (anchor + heave).
+//! Voyage command: always anchor, then run heave when GC is due or forced.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};

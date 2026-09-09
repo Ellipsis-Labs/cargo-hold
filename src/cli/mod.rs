@@ -469,8 +469,7 @@ impl Cli {
     pub fn parse_args() -> Self {
         let args: Vec<String> = std::env::args().collect();
 
-        // When invoked as `cargo hold`, cargo passes "hold" as the first
-        // argument We need to skip it to parse the actual subcommand
+        // Skip Cargo's leading "hold" argument to parse the actual subcommand.
         if args.len() >= 2 && args[1] == "hold" {
             // Skip the "hold" argument by reconstructing args without it
             let mut new_args = vec![args[0].clone()]; // program name
