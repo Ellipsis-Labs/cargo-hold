@@ -243,6 +243,79 @@ fn write_crate_artifact(target: &Path, name: &str, hash: &str, size: usize, mtim
 }
 
 #[test]
+fn voyage_gc_cooldown_preserves_anchor_and_gc_history() {
+    for (name, previous_age_hours, interval, force, should_run) in [
+        ("first run", None, Some(24), false, true),
+        ("within cooldown", Some(1), Some(24), false, false),
+        ("expired cooldown", Some(25), Some(24), false, true),
+        ("force override", Some(1), Some(24), true, true),
+        ("no interval", Some(1), None, false, true),
+        ("zero interval", Some(1), Some(0), false, true),
+        ("future timestamp", Some(-1), Some(24), false, false),
+        ("largest interval", Some(1), Some(u64::MAX), false, false),
+    ] {
+        let repo = setup_git_repo();
+        let target = repo.path().join("target");
+        make_profile(&target);
+        let path = target.join("cargo-hold.metadata");
+        stow(&path, 0, true, repo.path()).unwrap();
+        let mut before = load_metadata(&path).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        before.last_gc_mtime_nanos = previous_age_hours
+            .map(|hours| (now as i128 - i128::from(hours) * 3_600_000_000_000) as u128);
+        before.gc_metrics.runs = 3;
+        before.gc_metrics.last_suggested_cap = Some(1024);
+        before.gc_metrics.recent_auto_cap_runs.push(AutoCapRun {
+            cap: 1024,
+            final_size: 512,
+            ..Default::default()
+        });
+        save_metadata(&before, &path).unwrap();
+
+        // Simulate checkout changing an unchanged source file's timestamp.
+        let source = repo.path().join("test.txt");
+        let original_mtime = fs::metadata(&source).unwrap().modified().unwrap();
+        filetime::set_file_mtime(
+            &source,
+            filetime::FileTime::from_system_time(original_mtime + Duration::from_secs(60)),
+        )
+        .unwrap();
+
+        Voyage::builder()
+            .working_dir(repo.path())
+            .metadata_path(&path)
+            .target_dir(&target)
+            .gc_min_interval_hours(interval)
+            .force_gc(force)
+            .quiet(true)
+            .build()
+            .unwrap()
+            .run()
+            .unwrap();
+
+        let after = load_metadata(&path).unwrap();
+        assert_eq!(
+            fs::metadata(&source).unwrap().modified().unwrap(),
+            original_mtime,
+            "{name}"
+        );
+        if should_run {
+            assert!(after.last_gc_mtime_nanos.unwrap() >= now, "{name}");
+            assert_eq!(after.gc_metrics.runs, before.gc_metrics.runs + 1, "{name}");
+        } else {
+            assert_eq!(
+                after.last_gc_mtime_nanos, before.last_gc_mtime_nanos,
+                "{name}"
+            );
+            assert_eq!(after.gc_metrics, before.gc_metrics, "{name}");
+        }
+    }
+}
+
+#[test]
 fn test_heave_records_last_gc_timestamp() {
     let temp_dir = TempDir::new().unwrap();
     let target_dir = temp_dir.path().join("target");
@@ -538,7 +611,8 @@ fn metadata_only_then_large_fallback_build_recovers_to_protected_working_set() {
     assert_eq!(recovered.bytes_freed, 0);
 
     // The growing protected floor is confirmed again and recovery advances to
-    // the realistic working set, still based only on recognized protected bytes.
+    // the realistic working set, still based only on recognized protected
+    // bytes.
     let recovered_again = synthetic_voyage(
         &mut metrics,
         SyntheticTarget {

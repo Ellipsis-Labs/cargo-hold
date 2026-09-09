@@ -1,21 +1,27 @@
 //! Voyage command (anchor + heave).
 
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::commands::anchor::anchor_with_report;
 use crate::commands::gc_options::{GcOptions, GcOptionsBuilder};
 use crate::commands::heave::Heave;
 use crate::error::{HoldError, Result};
 use crate::logging::Logger;
+use crate::metadata::load_metadata;
 
 pub struct Voyage<'a> {
     pub(crate) gc: GcOptions<'a>,
     pub(crate) working_dir: &'a Path,
+    gc_min_interval_hours: Option<u64>,
+    force_gc: bool,
 }
 
 pub struct VoyageBuilder<'a> {
     gc: GcOptionsBuilder<'a>,
     working_dir: Option<&'a Path>,
+    gc_min_interval_hours: Option<u64>,
+    force_gc: bool,
 }
 
 impl<'a> Voyage<'a> {
@@ -60,7 +66,30 @@ impl<'a> Voyage<'a> {
             );
         }
 
-        log.info("🧹 Starting garbage collection...");
+        let reason = if self.force_gc {
+            "forced by --force-gc"
+        } else if let Some(hours) = self.gc_min_interval_hours {
+            if let Some(last_gc) = load_metadata(metadata_path)?.last_gc_mtime_nanos {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                let interval = u128::from(hours) * 3_600 * 1_000_000_000;
+                if now.saturating_sub(last_gc) < interval {
+                    log.info(format!(
+                        "🧹 Garbage collection skipped: within {hours}-hour cooldown"
+                    ));
+                    log.info("🚢 Voyage completed successfully!");
+                    return Ok(());
+                }
+                "cooldown expired"
+            } else {
+                "no previous GC timestamp"
+            }
+        } else {
+            "no GC interval configured"
+        };
+        log.info(format!("🧹 Starting garbage collection: {reason}"));
 
         Heave::builder()
             .target_dir(self.gc.target_dir())
@@ -94,6 +123,8 @@ impl<'a> VoyageBuilder<'a> {
         Self {
             gc: GcOptionsBuilder::new(),
             working_dir: None,
+            gc_min_interval_hours: None,
+            force_gc: false,
         }
     }
 
@@ -109,6 +140,16 @@ impl<'a> VoyageBuilder<'a> {
 
     pub fn max_target_size(mut self, size: Option<&'a str>) -> Self {
         self.gc = self.gc.max_target_size(size);
+        self
+    }
+
+    pub fn gc_min_interval_hours(mut self, hours: Option<u64>) -> Self {
+        self.gc_min_interval_hours = hours;
+        self
+    }
+
+    pub fn force_gc(mut self, force: bool) -> Self {
+        self.force_gc = force;
         self
     }
 
@@ -155,6 +196,8 @@ impl<'a> VoyageBuilder<'a> {
     pub fn build(self) -> Result<Voyage<'a>> {
         Ok(Voyage {
             gc: self.gc.build()?,
+            gc_min_interval_hours: self.gc_min_interval_hours,
+            force_gc: self.force_gc,
             working_dir: self
                 .working_dir
                 .ok_or_else(|| HoldError::ConfigError("working_dir is required".to_string()))?,

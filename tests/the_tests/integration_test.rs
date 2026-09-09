@@ -61,8 +61,8 @@ fn test_salvage_command() {
     // Run salvage
     execute_command(Commands::Salvage, &temp_dir, 0).unwrap();
 
-    // Verify timestamp was restored (should be close to original, not the old time
-    // we set)
+    // Verify timestamp was restored (should be close to original, not the old
+    // time we set)
     let restored_mtime = fs::metadata(&lib_rs).unwrap().modified().unwrap();
     assert!(restored_mtime > old_time);
 }
@@ -270,6 +270,8 @@ fn test_voyage_command() {
         gc_debug: false,
         gc_age_threshold_days: 7,
         gc_auto_max_target_size: true,
+        gc_min_interval_hours: None,
+        force_gc: false,
     };
 
     // Run voyage command (anchor + heave)
@@ -292,6 +294,8 @@ fn test_voyage_command_from_subdirectory() {
         gc_debug: false,
         gc_age_threshold_days: 7,
         gc_auto_max_target_size: true,
+        gc_min_interval_hours: None,
+        force_gc: false,
     };
 
     execute_command_with_dir(voyage_command, &temp_dir, &subdir, 0).unwrap();
@@ -320,8 +324,8 @@ fn test_core_voyage_workflow_integration() {
     // Verify artifacts were created
     assert!(target_dir.join("debug").exists());
 
-    // Step 3: Reset all source file timestamps to current time (simulating CI cache
-    // restoration)
+    // Step 3: Reset all source file timestamps to current time (simulating CI
+    // cache restoration)
     std::thread::sleep(Duration::from_secs(1)); // Ensure time difference
     reset_source_timestamps(temp_dir.path()).unwrap();
 
@@ -535,6 +539,8 @@ fn test_voyage_from_subdirectory() {
             gc_debug: false,
             gc_age_threshold_days: 7,
             gc_auto_max_target_size: true,
+            gc_min_interval_hours: None,
+            force_gc: false,
         },
         &temp_dir,
         &subdir,
@@ -555,7 +561,8 @@ fn test_salvage_from_subdirectory() {
     let target_dir = temp_dir.path().join("target");
     fs::create_dir(&target_dir).unwrap();
 
-    // First stow from the root to create cache (this will create target directory)
+    // First stow from the root to create cache (this will create target
+    // directory)
     execute_command(Commands::Stow, &temp_dir, 0).unwrap();
 
     // Create a subdirectory
@@ -640,6 +647,8 @@ edition = "2021"
             gc_debug: false,
             gc_age_threshold_days: 7,
             gc_auto_max_target_size: true,
+            gc_min_interval_hours: None,
+            force_gc: false,
         })
         .build()
         .expect("Failed to build Cli");
@@ -896,8 +905,8 @@ fn test_heave_preserves_recent_artifact_after_delayed_stow() {
         auto_max_target_size: true,
     };
 
-    // The artifact is newer than the previous GC timestamp, so it should survive
-    // even under a tight size cap.
+    // The artifact is newer than the previous GC timestamp, so it should
+    // survive even under a tight size cap.
     execute_command(heave_command, &temp_dir, 2).unwrap();
 
     assert!(
@@ -988,6 +997,8 @@ fn voyage_command(age_threshold_days: u32) -> Commands {
         gc_debug: false,
         gc_age_threshold_days: age_threshold_days,
         gc_auto_max_target_size: true,
+        gc_min_interval_hours: None,
+        force_gc: false,
     }
 }
 
@@ -1044,8 +1055,8 @@ fn test_heave_preserves_artifacts_newer_than_previous_gc() {
 
 #[test]
 fn test_heave_with_preservation_message() {
-    // Test that heave shows the preservation message when last_gc_mtime_nanos is
-    // set
+    // Test that heave shows the preservation message when last_gc_mtime_nanos
+    // is set
 
     let temp_dir = setup_cargo_project();
     let metadata_path = temp_dir.path().join("target/cargo-hold.metadata");
@@ -1082,7 +1093,7 @@ fn test_heave_with_preservation_message() {
     };
 
     // Execute with verbose output to see the preservation message.
-    // The message "Using previous GC timestamp for artifact preservation" should
-    // be shown.
+    // The message "Using previous GC timestamp for artifact preservation"
+    // should be shown.
     execute_command(heave_command, &temp_dir, 2).unwrap();
 }
